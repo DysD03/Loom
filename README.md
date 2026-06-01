@@ -10,9 +10,15 @@ Five tabs (built phase by phase — see `PLAN.md`):
 - **Canvas** — a React Flow whiteboard for connected ideas
 - **Memory** — durable facts about you, used to personalize and suggest
 
-> **Status:** Phase 2 complete — **Chat** (streaming, persisted, markdown + copyable code, per-conversation model) and **Memory** (durable facts with embeddings-based dedupe/retrieval, injected into every session; add/edit/delete/pin; on-demand extraction from chats) are live. Agents / Deep Research / Canvas are placeholders until their phases land.
+> **Status:** Phase 3 complete — **Chat**, **Memory**, and **MCP + Tools** are live. Agents / Deep Research / Canvas are placeholders until their phases land.
+>
+> - **Chat** — streaming, persisted, markdown + copyable code, per-conversation model override
+> - **Memory** — durable facts with embeddings-based dedupe/retrieval, injected into every session; add/edit/delete/pin; on-demand extraction from chats
+> - **Tools** — built-in `searchWeb` tool (SearXNG JSON API) wired into every chat; MCP servers (stdio + SSE/HTTP) managed from Settings, tools auto-loaded into the assistant
 >
 > For Memory's semantic features, set an **embeddings model** in Settings (e.g. `nomic-embed-text` / `text-embedding-*` exposed by LM Studio/Ollama). Without one, memories still work but use exact-text dedupe and recent/pinned retrieval.
+>
+> Tool calling (search + MCP) requires a model that supports function/tool calling (e.g. Qwen2.5, Llama 3.1+). If the model doesn't support tools the chat still works — tool calls simply won't be attempted.
 
 ---
 
@@ -72,15 +78,27 @@ On Windows PowerShell, replace `"$PWD/searxng"` with `"${PWD}\searxng"`.
 | `npm run db:migrate` | Apply migrations to `./data/loom.db` |
 | `npm run db:studio` | Inspect the DB in Drizzle Studio |
 
+## MCP servers
+
+Add any [Model Context Protocol](https://modelcontextprotocol.io/) server from **Settings → MCP Servers**. Both transports are supported:
+
+- **stdio** — specify a command (e.g. `npx`) and args JSON array (e.g. `["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]`); optional env vars as a JSON object.
+- **SSE/HTTP** — specify the SSE endpoint URL (e.g. `http://localhost:3001/sse`).
+
+Click **Test** to connect and see how many tools the server exposes. Enabled servers are connected automatically on the next chat request and their tools are injected alongside the built-in `searchWeb` tool.
+
 ## Project layout
 
 ```
 src/
   app/            # routes: / (Chat), /agents, /research, /canvas, /memory, /settings
-    api/llm/ping  # connection test against the configured LLM
-  components/      # nav, placeholders, shadcn/ui
+    api/
+      chat/       # streaming chat route (tools + memory injection)
+      llm/        # ping + models endpoints
+      mcp/        # servers CRUD + test connection
+  components/     # nav, chat view, tool-call blocks, shadcn/ui
   db/             # Drizzle schema + better-sqlite3 client
-  lib/            # settings repo, LLM client, utils
+  lib/            # settings, provider, memory, mcp client, tool registry
 data/loom.db      # SQLite database (gitignored)
 drizzle/          # committed migrations
 ```
