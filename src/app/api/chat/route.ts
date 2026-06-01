@@ -3,6 +3,7 @@ import { convertToModelMessages, streamText, type UIMessage } from "ai";
 import { getChatModel, textFromUIMessage } from "@/lib/provider";
 import { addMessage, getConversation } from "@/lib/conversations";
 import { formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
+import { buildToolRegistry, stepCountIs } from "@/lib/tools";
 
 export const maxDuration = 120;
 
@@ -56,10 +57,19 @@ export async function POST(request: Request) {
     // Memory retrieval is best-effort; never block chat on it.
   }
 
+  let tools: Awaited<ReturnType<typeof buildToolRegistry>> | undefined;
+  try {
+    tools = await buildToolRegistry();
+  } catch {
+    // Tools are best-effort; don't block chat if registry fails
+  }
+
   const result = streamText({
     model,
     system,
     messages: await convertToModelMessages(messages),
+    tools,
+    stopWhen: stepCountIs(5),
     onFinish: ({ text }) => {
       if (text.trim()) {
         addMessage({ conversationId, role: "assistant", content: text });

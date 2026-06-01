@@ -95,7 +95,7 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
+    <div className="space-y-6">
       <Card>
         <CardHeader>
           <CardTitle>Local LLM</CardTitle>

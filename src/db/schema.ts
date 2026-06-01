@@ -97,3 +97,28 @@ export const MEMORY_TYPES = [
   "context",
   "fact",
 ] as const satisfies readonly MemoryType[];
+
+/** An MCP server entry managed from the Settings page. */
+export const mcpServers = sqliteTable("mcp_servers", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  transport: text("transport", { enum: ["stdio", "sse"] }).notNull(),
+  /** stdio: executable path */
+  command: text("command"),
+  /** stdio: JSON-encoded string[] of arguments */
+  args: text("args"),
+  /** SSE/HTTP: endpoint URL */
+  url: text("url"),
+  /** JSON-encoded Record<string,string> extra env vars for stdio servers */
+  env: text("env"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type McpServer = typeof mcpServers.$inferSelect;
+export type McpTransport = McpServer["transport"];
