@@ -10,15 +10,16 @@ Five tabs (built phase by phase — see `PLAN.md`):
 - **Canvas** — a React Flow whiteboard for connected ideas
 - **Memory** — durable facts about you, used to personalize and suggest
 
-> **Status:** Phase 3 complete — **Chat**, **Memory**, and **MCP + Tools** are live. Agents / Deep Research / Canvas are placeholders until their phases land.
+> **Status:** Phase 4 complete — **Chat**, **Memory**, **MCP + Tools**, and **Agents** are live. Deep Research / Canvas are placeholders until their phases land.
 >
 > - **Chat** — streaming, persisted, markdown + copyable code, per-conversation model override
+> - **Agents** — a multi-step tool-using loop on its own tab: built-in + MCP tools, streamed reasoning, an in-message step tracker, a per-session settings popover (max steps + tool toggles), and a tool-capability check that degrades to plain chat with a warning when the model can't call tools
 > - **Memory** — durable facts with embeddings-based dedupe/retrieval, injected into every session; add/edit/delete/pin; on-demand extraction from chats
-> - **Tools** — built-in `searchWeb` tool (SearXNG JSON API) wired into every chat; MCP servers (stdio + SSE/HTTP) managed from Settings, tools auto-loaded into the assistant
+> - **Tools** — built-in `searchWeb` (SearXNG), `readUrl` (fetch a page → readable text), `calculator`, and `currentDateTime`, wired into Chat and Agents; MCP servers (stdio + SSE/HTTP) managed from Settings, tools auto-loaded into the assistant. Tool calls and reasoning are persisted, so they replay when you reopen a conversation.
 >
 > For Memory's semantic features, set an **embeddings model** in Settings (e.g. `nomic-embed-text` / `text-embedding-*` exposed by LM Studio/Ollama). Without one, memories still work but use exact-text dedupe and recent/pinned retrieval.
 >
-> Tool calling (search + MCP) requires a model that supports function/tool calling (e.g. Qwen2.5, Llama 3.1+). If the model doesn't support tools the chat still works — tool calls simply won't be attempted.
+> Tool calling (Agents, search + MCP) requires a model that supports function/tool calling (e.g. Qwen2.5, Llama 3.1+). If the model doesn't support tools the chat still works — tool calls simply won't be attempted, and the Agents tab shows a clear warning.
 
 ---
 
@@ -85,7 +86,7 @@ Add any [Model Context Protocol](https://modelcontextprotocol.io/) server from *
 - **stdio** — specify a command (e.g. `npx`) and args JSON array (e.g. `["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]`); optional env vars as a JSON object.
 - **SSE/HTTP** — specify the SSE endpoint URL (e.g. `http://localhost:3001/sse`).
 
-Click **Test** to connect and see how many tools the server exposes. Enabled servers are connected automatically on the next chat request and their tools are injected alongside the built-in `searchWeb` tool.
+Click **Test** to connect and see how many tools the server exposes. Enabled servers are connected automatically on the next chat request and their tools are injected alongside the built-in tools. In the **Agents** tab you can toggle individual tools (built-in or MCP) on/off per session via the **Agent** settings popover.
 
 ## Project layout
 
@@ -94,11 +95,13 @@ src/
   app/            # routes: / (Chat), /agents, /research, /canvas, /memory, /settings
     api/
       chat/       # streaming chat route (tools + memory injection)
+      agent/      # agent route: multi-step tool loop, capability-gated tools
+      tools/      # available-tool list (for the per-session toggles)
       llm/        # ping + models endpoints
       mcp/        # servers CRUD + test connection
-  components/     # nav, chat view, tool-call blocks, shadcn/ui
+  components/     # nav, chat view, tool-call + reasoning blocks, agent settings, shadcn/ui
   db/             # Drizzle schema + better-sqlite3 client
-  lib/            # settings, provider, memory, mcp client, tool registry
+  lib/            # settings, provider, memory, mcp client, tool registry, agent, capabilities
 data/loom.db      # SQLite database (gitignored)
 drizzle/          # committed migrations
 ```
