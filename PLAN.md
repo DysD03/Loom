@@ -86,9 +86,11 @@ Extraction, embeddings, storage, dedupe via similarity, retrieval/injection into
 
 Built: `memories` table (migration `0002`); `src/lib/memory.ts` (embed via `embed`/`embedMany`, cosine, CRUD, dedupe @0.9, extraction via `generateText` + tolerant JSON parse, retrieval = pinned + top-K@floor 0.3); embeddings helper in provider; `/api/chat` injects retrieved memories into the system prompt (best-effort, try/catch); Memory tab (`/memory`) with add/edit/delete/pin, type badges, source-chat links, and an embeddings-not-configured notice; "Extract memories" button in the chat header. Graceful degradation when no embeddings model (text-exact dedupe, recent+pinned retrieval). Verified: page rendering, CRUD listing, injection path resilience. Extraction/embeddings/semantic paths require a live model (user to verify).
 
-### Phase 3 — MCP + built-in tools + SearXNG
+### Phase 3 — MCP + built-in tools + SearXNG ✅ (complete — awaiting checkpoint confirmation)
 
 MCP client (stdio + SSE/HTTP), server management UI, shared tool registry, built-in SearXNG search tool hitting JSON API.
+
+Built: `mcp_servers` table (migration `0003`); `src/lib/mcp.ts` (singleton client manager, `connectServer`/`disconnectServer`/`pingServer`/`getAllMcpTools`/`callMcpTool`, global Map survives hot-reload); `src/lib/tools.ts` (shared tool registry — built-in `searchWeb` via SearXNG JSON API + dynamic `dynamicTool` wrappers for every enabled MCP server's tools); `/api/mcp/servers` CRUD (GET/POST/PATCH/DELETE); `/api/mcp/test` POST to ping + get tool count; `/api/chat` wires tools + `stopWhen: stepCountIs(5)` into `streamText` (best-effort, never blocks chat); Settings page gains MCP Servers card (add stdio/SSE servers, test connection, enable/disable, delete); `ChatView` renders `tool-invocation` parts inline via collapsible `ToolCallBlock` (amber pulse while running, expandable input/output). typecheck/lint/build green.
 
 ### Phase 4 — Agents
 
@@ -120,4 +122,5 @@ Prompt/project idea generation from memory; launch-session buttons.
 - **2026-06-01** — Phase 1 complete. Streaming chat working end to end against the `/api/chat` route with DB persistence, conversation sidebar (new/rename/delete), per-conversation model override, and markdown rendering with copyable code blocks. typecheck/lint/build green; runtime smoke test passed (incl. graceful errors with no LLM).
   - Notable: installed **AI SDK v6** (`ai@6`, `@ai-sdk/react@3`). Key API specifics now in CLAUDE.md — `convertToModelMessages` is **async**; `useChat` has no `input`/`handleSubmit` (manage input, call `sendMessage({ text })`); messages use `parts`. Base UI dropdown/select use `render` prop + `data-[popup-open]` (not `asChild`/`data-[state=open]`).
   - Also fixed a chat layout bug post-checkpoint: `ChatView` needed `flex-1 min-w-0` (was only half-width) and `min-h-0` on scroll containers so the message list scrolls internally instead of growing the page.
-- **2026-06-01** — Phase 2 complete. Memory core: in-DB cosine vector search, embeddings via local `/embeddings`, on-demand extraction from chats, dedupe, system-prompt injection, and a full Memory tab (add/edit/delete/pin). typecheck/lint/build green; runtime-verified page + injection resilience (LLM-dependent paths left for user to verify).
+- **2026-06-01** — Phase 2 complete.
+- **2026-06-01** — Phase 3 complete. MCP client + tool registry + SearXNG search wired end-to-end. `@modelcontextprotocol/sdk` + `zod` added. `mcp_servers` table migrated. Tool calls render inline in Chat with collapsible blocks. typecheck/lint/build green. Memory core: in-DB cosine vector search, embeddings via local `/embeddings`, on-demand extraction from chats, dedupe, system-prompt injection, and a full Memory tab (add/edit/delete/pin). typecheck/lint/build green; runtime-verified page + injection resilience (LLM-dependent paths left for user to verify).

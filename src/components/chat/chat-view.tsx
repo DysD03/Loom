@@ -13,6 +13,7 @@ import { Markdown } from "@/components/markdown";
 import { CopyButton } from "@/components/copy-button";
 import { ModelSelect } from "@/components/chat/model-select";
 import { extractMemoriesAction } from "@/app/memory/actions";
+import { ToolCallBlock } from "@/components/chat/tool-call-block";
 
 function messageText(message: UIMessage): string {
   return message.parts
@@ -25,27 +26,36 @@ function MessageBubble({ message }: { message: UIMessage }) {
   const isUser = message.role === "user";
   const text = messageText(message);
 
+  if (isUser) {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground">
+          {text}
+        </div>
+      </div>
+    );
+  }
+
+  // Render all parts in order for assistant messages
+  const toolParts = message.parts.filter(
+    (p): p is Extract<typeof p, { type: "tool-invocation" }> => p.type === "tool-invocation",
+  );
+  const hasText = text.trim().length > 0;
+
   return (
-    <div className={isUser ? "flex justify-end" : "flex justify-start"}>
-      <div
-        className={
-          isUser
-            ? "max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground"
-            : "group max-w-[85%] space-y-1"
-        }
-      >
-        {isUser ? (
-          text
-        ) : (
-          <>
+    <div className="flex justify-start">
+      <div className="group max-w-[85%] space-y-2">
+        {toolParts.map((part, i) => (
+          <ToolCallBlock key={i} part={part} />
+        ))}
+        {hasText ? (
+          <div className="space-y-1">
             <Markdown>{text}</Markdown>
-            {text ? (
-              <div className="opacity-0 transition-opacity group-hover:opacity-100">
-                <CopyButton value={text} label="Copy" />
-              </div>
-            ) : null}
-          </>
-        )}
+            <div className="opacity-0 transition-opacity group-hover:opacity-100">
+              <CopyButton value={text} label="Copy" />
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
