@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1780309433260,
+      "tag": "0000_wild_mulholland_black",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1780309846817,
+      "tag": "0001_modern_korvac",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1780310871977,
+      "tag": "0002_goofy_mesmero",
+      "breakpoints": true
+    }
+  ]
+}

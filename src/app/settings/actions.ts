@@ -1,0 +1,17 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+
+import { saveSettings, type SettingsInput } from "@/lib/settings";
+
+export async function updateSettings(input: SettingsInput) {
+  const saved = saveSettings({
+    llmBaseUrl: input.llmBaseUrl.trim(),
+    llmApiKey: input.llmApiKey.trim() || "lm-studio",
+    llmModel: input.llmModel.trim(),
+    embeddingsModel: input.embeddingsModel.trim(),
+    searxngUrl: input.searxngUrl.trim(),
+  });
+  revalidatePath("/settings");
+  return saved;
+}
