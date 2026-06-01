@@ -29,6 +29,10 @@ export const conversations = sqliteTable("conversations", {
     .default("chat"),
   /** Per-conversation model override; null means fall back to global settings. */
   model: text("model"),
+  /** Agent surface: max tool-loop steps; null means use the default cap. */
+  agentMaxSteps: integer("agent_max_steps"),
+  /** Agent surface: JSON-encoded string[] of enabled tool keys; null means all tools. */
+  agentTools: text("agent_tools"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -46,6 +50,8 @@ export const messages = sqliteTable(
       .references(() => conversations.id, { onDelete: "cascade" }),
     role: text("role", { enum: ["system", "user", "assistant"] }).notNull(),
     content: text("content").notNull().default(""),
+    /** JSON-encoded UIMessage parts (tool calls, reasoning, text); null for legacy rows. */
+    parts: text("parts"),
     createdAt: text("created_at")
       .notNull()
       .default(sql`(current_timestamp)`),

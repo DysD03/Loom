@@ -70,14 +70,27 @@ export async function POST(request: Request) {
     messages: await convertToModelMessages(messages),
     tools,
     stopWhen: stepCountIs(5),
-    onFinish: ({ text }) => {
-      if (text.trim()) {
-        addMessage({ conversationId, role: "assistant", content: text });
-      }
-    },
   });
 
   return result.toUIMessageStreamResponse({
+    originalMessages: messages,
+    onFinish: ({ responseMessage }) => {
+      if (responseMessage.role !== "assistant") {
+        return;
+      }
+      const text = textFromUIMessage(responseMessage);
+      const hasTools = responseMessage.parts.some(
+        (p) => p.type !== "step-start" && p.type !== "text",
+      );
+      if (text.trim() || hasTools) {
+        addMessage({
+          conversationId,
+          role: "assistant",
+          content: text,
+          parts: responseMessage.parts,
+        });
+      }
+    },
     onError: (error) => {
       const detail = error instanceof Error ? error.message : String(error);
       return `The local LLM request failed: ${detail}. Check that the server is running and a tool-capable model is loaded (Settings → Test connection).`;

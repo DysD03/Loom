@@ -8,27 +8,45 @@ import {
   renameConversation,
   setConversationModel,
 } from "@/lib/conversations";
+import type { ConversationType } from "@/db/schema";
 
-export async function newConversationAction(): Promise<string> {
-  const conversation = createConversation("chat");
-  revalidatePath("/");
+/** Where each conversation surface lives, so server actions revalidate the right route. */
+const SURFACE_PATH: Record<ConversationType, string> = {
+  chat: "/",
+  agent: "/agents",
+  research: "/research",
+};
+
+export async function newConversationAction(
+  type: ConversationType = "chat",
+): Promise<string> {
+  const conversation = createConversation(type);
+  revalidatePath(SURFACE_PATH[type]);
   return conversation.id;
 }
 
-export async function deleteConversationAction(id: string): Promise<void> {
+export async function deleteConversationAction(
+  id: string,
+  type: ConversationType = "chat",
+): Promise<void> {
   deleteConversation(id);
-  revalidatePath("/");
+  revalidatePath(SURFACE_PATH[type]);
 }
 
-export async function renameConversationAction(id: string, title: string): Promise<void> {
+export async function renameConversationAction(
+  id: string,
+  title: string,
+  type: ConversationType = "chat",
+): Promise<void> {
   renameConversation(id, title);
-  revalidatePath("/");
+  revalidatePath(SURFACE_PATH[type]);
 }
 
 export async function setConversationModelAction(
   id: string,
   model: string | null,
+  type: ConversationType = "chat",
 ): Promise<void> {
   setConversationModel(id, model);
-  revalidatePath("/");
+  revalidatePath(SURFACE_PATH[type]);
 }

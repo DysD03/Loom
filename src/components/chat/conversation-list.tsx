@@ -13,6 +13,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { ConversationType } from "@/db/schema";
 import {
   deleteConversationAction,
   newConversationAction,
@@ -27,9 +28,15 @@ interface ConversationSummary {
 export function ConversationList({
   conversations,
   activeId,
+  type = "chat",
+  basePath = "/",
+  newLabel = "New chat",
 }: {
   conversations: ConversationSummary[];
   activeId?: string;
+  type?: ConversationType;
+  basePath?: string;
+  newLabel?: string;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -38,16 +45,16 @@ export function ConversationList({
 
   function handleNew() {
     startTransition(async () => {
-      const id = await newConversationAction();
-      router.push(`/?c=${id}`);
+      const id = await newConversationAction(type);
+      router.push(`${basePath}?c=${id}`);
     });
   }
 
   function handleDelete(id: string) {
     startTransition(async () => {
-      await deleteConversationAction(id);
+      await deleteConversationAction(id, type);
       if (id === activeId) {
-        router.push("/");
+        router.push(basePath);
       } else {
         router.refresh();
       }
@@ -59,7 +66,7 @@ export function ConversationList({
     setEditingId(null);
     if (next) {
       startTransition(async () => {
-        await renameConversationAction(id, next);
+        await renameConversationAction(id, next, type);
         router.refresh();
       });
     }
@@ -70,7 +77,7 @@ export function ConversationList({
       <div className="p-2">
         <Button onClick={handleNew} disabled={isPending} className="w-full justify-start gap-2">
           <Plus className="size-4" />
-          New chat
+          {newLabel}
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -103,7 +110,7 @@ export function ConversationList({
                 <li key={conversation.id} className="group relative">
                   <button
                     type="button"
-                    onClick={() => router.push(`/?c=${conversation.id}`)}
+                    onClick={() => router.push(`${basePath}?c=${conversation.id}`)}
                     className={cn(
                       "w-full truncate rounded-md py-2 pr-8 pl-3 text-left text-sm transition-colors",
                       active

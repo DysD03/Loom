@@ -60,6 +60,42 @@ export function setConversationModel(
     .get();
 }
 
+/** Per-session agent configuration. `null` fields mean "use defaults / all tools". */
+export interface AgentConfig {
+  maxSteps: number | null;
+  /** Enabled tool registry keys; null means all tools are enabled. */
+  tools: string[] | null;
+}
+
+export function getAgentConfig(id: string): AgentConfig {
+  const convo = getConversation(id);
+  let tools: string[] | null = null;
+  if (convo?.agentTools) {
+    try {
+      const parsed = JSON.parse(convo.agentTools) as unknown;
+      if (Array.isArray(parsed)) {
+        tools = parsed.filter((t): t is string => typeof t === "string");
+      }
+    } catch {
+      // Corrupt JSON falls back to "all tools".
+    }
+  }
+  return { maxSteps: convo?.agentMaxSteps ?? null, tools };
+}
+
+export function setAgentConfig(id: string, config: AgentConfig): Conversation | undefined {
+  return db
+    .update(conversations)
+    .set({
+      agentMaxSteps: config.maxSteps && config.maxSteps > 0 ? Math.floor(config.maxSteps) : null,
+      agentTools: config.tools ? JSON.stringify(config.tools) : null,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(conversations.id, id))
+    .returning()
+    .get();
+}
+
 function touchConversation(id: string): void {
   db.update(conversations)
     .set({ updatedAt: new Date().toISOString() })
@@ -95,10 +131,17 @@ export function addMessage(input: {
   conversationId: string;
   role: MessageRole;
   content: string;
+  /** Full UIMessage parts (tool calls, reasoning, text); stored as JSON for replay. */
+  parts?: UIMessage["parts"];
 }): Message {
+  const { parts, ...rest } = input;
   const row = db
     .insert(messages)
-    .values({ id: randomUUID(), ...input })
+    .values({
+      id: randomUUID(),
+      ...rest,
+      parts: parts && parts.length ? JSON.stringify(parts) : null,
+    })
     .returning()
     .get();
   touchConversation(input.conversationId);
@@ -110,9 +153,21 @@ export function addMessage(input: {
 
 /** Converts stored messages into the UIMessage shape the client `useChat` expects. */
 export function toUIMessages(rows: Message[]): UIMessage[] {
-  return rows.map((row) => ({
-    id: row.id,
-    role: row.role,
-    parts: [{ type: "text", text: row.content }],
-  }));
+  return rows.map((row) => {
+    if (row.parts) {
+      try {
+        const parts = JSON.parse(row.parts) as UIMessage["parts"];
+        if (Array.isArray(parts) && parts.length) {
+          return { id: row.id, role: row.role, parts };
+        }
+      } catch {
+        // Corrupt parts JSON falls back to plain text below.
+      }
+    }
+    return {
+      id: row.id,
+      role: row.role,
+      parts: [{ type: "text", text: row.content }],
+    };
+  });
 }

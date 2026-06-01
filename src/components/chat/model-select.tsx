@@ -9,6 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import type { ConversationType } from "@/db/schema";
 import { setConversationModelAction } from "@/app/actions";
 
 const DEFAULT_VALUE = "__default__";
@@ -16,9 +17,11 @@ const DEFAULT_VALUE = "__default__";
 export function ModelSelect({
   conversationId,
   current,
+  type = "chat",
 }: {
   conversationId: string;
   current: string | null;
+  type?: ConversationType;
 }) {
   const [models, setModels] = useState<string[]>([]);
   const [isPending, startTransition] = useTransition();
@@ -43,7 +46,7 @@ export function ModelSelect({
 
   function handleChange(next: string | null) {
     const model = !next || next === DEFAULT_VALUE ? null : next;
-    startTransition(() => setConversationModelAction(conversationId, model));
+    startTransition(() => setConversationModelAction(conversationId, model, type));
   }
 
   return (
