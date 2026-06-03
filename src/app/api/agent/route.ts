@@ -4,7 +4,6 @@ import {
   createUIMessageStreamResponse,
   streamText,
   type UIMessage,
-  type UIMessageStreamWriter,
 } from "ai";
 
 import { getChatModel, textFromUIMessage } from "@/lib/provider";

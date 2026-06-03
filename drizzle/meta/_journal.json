@@ -43,6 +43,13 @@
       "when": 1780395609764,
       "tag": "0005_tiny_energizer",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1780469881965,
+      "tag": "0006_brave_mister_fear",
+      "breakpoints": true
     }
   ]
 }

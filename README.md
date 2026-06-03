@@ -6,11 +6,11 @@ Five tabs (built phase by phase — see `PLAN.md`):
 
 - **Chat** — streaming conversational chat
 - **Agents** — chat that calls tools (built-in + MCP) in an agent loop
-- **Deep Research** — plan → search (SearXNG) → read → cited report
+- **Deep Research** — plan → search (SearXNG) → read → **cited report**, with live staged progress and a numbered source list matching the inline `[n]` citations
 - **Canvas** — a React Flow whiteboard for connected ideas
 - **Memory** — durable facts about you, used to personalize and suggest
 
-> **Status:** Phase 4 complete — **Chat**, **Memory**, **MCP + Tools**, and **Agents** are live. Deep Research / Canvas are placeholders until their phases land.
+> **Status:** Phase 5 complete — **Chat**, **Memory**, **MCP + Tools**, **Agents**, and **Deep Research** are live. Canvas is a placeholder until its phase lands.
 >
 > The UI wears an **8-bit retro / cyberpunk** skin: neon magenta + cyan on near-black, subtle CRT scanlines + vignette, fluid animations, a self-hosted **JetBrainsMono Nerd Font**, and a pixel display font (Press Start 2P) for the logo.
 >

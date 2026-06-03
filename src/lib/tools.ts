@@ -3,8 +3,8 @@ import "server-only";
 import { tool, jsonSchema, dynamicTool, stepCountIs, type ToolSet } from "ai";
 import { z } from "zod";
 
-import { getSettings } from "./settings";
 import { getAllMcpTools, callMcpTool } from "./mcp";
+import { fetchReadable, searxngSearch } from "./web";
 
 export { stepCountIs };
 
@@ -47,33 +47,11 @@ function buildSearchTool() {
       "Search the web via a local SearXNG instance. Returns results with title, URL, and snippet.",
     inputSchema,
     execute: async ({ query, numResults }: Input) => {
-      const settings = getSettings();
-      const base = settings.searxngUrl.replace(/\/$/, "");
-      const url = new URL(`${base}/search`);
-      url.searchParams.set("q", query);
-      url.searchParams.set("format", "json");
-      url.searchParams.set("categories", "general");
-
-      const res = await fetch(url.toString(), {
-        headers: { Accept: "application/json" },
-        signal: AbortSignal.timeout(10_000),
-      });
-
-      if (!res.ok) {
-        return { error: `SearXNG returned ${res.status}: ${res.statusText}` };
+      try {
+        return { results: await searxngSearch(query, numResults) };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
       }
-
-      const data = (await res.json()) as {
-        results?: Array<{ title?: string; url?: string; content?: string }>;
-      };
-
-      const results = (data.results ?? []).slice(0, numResults).map((r) => ({
-        title: r.title ?? "",
-        url: r.url ?? "",
-        snippet: r.content ?? "",
-      }));
-
-      return { results };
     },
   });
 }
@@ -81,26 +59,6 @@ function buildSearchTool() {
 // ---------------------------------------------------------------------------
 // Built-in: read a web page (fetch + strip HTML to readable text)
 // ---------------------------------------------------------------------------
-function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<\/(p|div|h[1-6]|li|br|tr|section|article|header|footer)>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
 function buildReadUrlTool() {
   const inputSchema = z.object({
     url: z.string().url().describe("The absolute http(s) URL of the page to read"),
@@ -120,40 +78,7 @@ function buildReadUrlTool() {
       "Fetch a web page by URL and return its readable text content (HTML stripped). " +
       "Use after searchWeb to read a result, or to read any known URL.",
     inputSchema,
-    execute: async ({ url, maxChars }: Input) => {
-      let res: Response;
-      try {
-        res = await fetch(url, {
-          headers: { "User-Agent": "Loom/1.0 (+local)", Accept: "text/html,*/*" },
-          signal: AbortSignal.timeout(15_000),
-        });
-      } catch (err) {
-        return { error: `Failed to fetch ${url}: ${err instanceof Error ? err.message : String(err)}` };
-      }
-
-      if (!res.ok) {
-        return { error: `Fetch returned ${res.status} ${res.statusText} for ${url}` };
-      }
-
-      const contentType = res.headers.get("content-type") ?? "";
-      const raw = await res.text();
-
-      if (contentType.includes("application/json")) {
-        return { url, contentType, text: raw.slice(0, maxChars) };
-      }
-
-      const titleMatch = raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-      const title = titleMatch ? htmlToText(titleMatch[1]) : "";
-      const text = htmlToText(raw);
-      const truncated = text.length > maxChars;
-
-      return {
-        url,
-        title,
-        text: text.slice(0, maxChars),
-        truncated,
-      };
-    },
+    execute: async ({ url, maxChars }: Input) => fetchReadable(url, maxChars),
   });
 }
 

@@ -132,6 +132,45 @@ export const MEMORY_TYPES = [
   "fact",
 ] as const satisfies readonly MemoryType[];
 
+/**
+ * A Deep Research run: the question, the search plan, the gathered sources, and
+ * the synthesized cited report. Belongs to a `research`-type conversation; a
+ * conversation may accumulate several runs (the newest is shown).
+ */
+export const researchReports = sqliteTable(
+  "research_reports",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    question: text("question").notNull(),
+    /** JSON-encoded string[] of the search queries / sub-questions. */
+    plan: text("plan"),
+    /** JSON-encoded ResearchSource[] (title, url, snippet, used). */
+    sources: text("sources"),
+    /** Final report markdown. */
+    report: text("report").notNull().default(""),
+    status: text("status", {
+      enum: ["planning", "searching", "reading", "writing", "done", "error"],
+    })
+      .notNull()
+      .default("planning"),
+    /** Populated when status is "error". */
+    error: text("error"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+  },
+  (t) => [index("research_reports_conversation_idx").on(t.conversationId, t.createdAt)],
+);
+
+export type ResearchReport = typeof researchReports.$inferSelect;
+export type ResearchStatus = ResearchReport["status"];
+
 /** An MCP server entry managed from the Settings page. */
 export const mcpServers = sqliteTable("mcp_servers", {
   id: text("id").primaryKey(),
