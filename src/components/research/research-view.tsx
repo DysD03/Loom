@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
   Check,
@@ -82,9 +82,13 @@ export function ResearchView({
   initialReport: LoadedReport | null;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const hasReport = Boolean(initialReport && initialReport.report);
 
-  const [question, setQuestion] = useState("");
+  // Prefill the question when launched from a memory suggestion (?seed=…).
+  const [question, setQuestion] = useState(() =>
+    initialReport ? "" : (searchParams.get("seed") ?? ""),
+  );
   const [running, setRunning] = useState(false);
   const [stage, setStage] = useState<ResearchStatus | null>(
     initialReport ? initialReport.status : null,

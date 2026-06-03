@@ -18,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Suggestions } from "@/components/memory/suggestions";
 import {
   addMemoryAction,
   deleteMemoryAction,
@@ -245,6 +246,8 @@ export function MemoryManager({
           used instead).
         </div>
       ) : null}
+
+      <Suggestions hasMemories={memories.length > 0} />
 
       <AddMemory />
 

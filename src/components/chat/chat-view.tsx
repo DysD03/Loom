@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, type UIMessage } from "ai";
 import { toast } from "sonner";
@@ -124,7 +124,9 @@ export function ChatView({
   headerActions,
 }: ChatViewProps) {
   const router = useRouter();
-  const [input, setInput] = useState("");
+  const searchParams = useSearchParams();
+  // Prefill the composer when launched from a memory suggestion (?seed=…).
+  const [input, setInput] = useState(() => searchParams.get("seed") ?? "");
   const [isExtracting, setIsExtracting] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
