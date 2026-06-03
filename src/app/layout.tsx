@@ -1,18 +1,35 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Press_Start_2P } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
 import { Nav } from "@/components/nav";
 import { Toaster } from "@/components/ui/sonner";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
+// Self-hosted JetBrainsMono Nerd Font (includes icon glyphs) — primary UI font.
+const jbMono = localFont({
+  variable: "--font-jbmono",
+  display: "swap",
+  src: [
+    {
+      path: "../../public/fonts/JetBrainsMonoNerdFont-Regular.ttf",
+      weight: "400",
+      style: "normal",
+    },
+    {
+      path: "../../public/fonts/JetBrainsMonoNerdFont-Bold.ttf",
+      weight: "700",
+      style: "normal",
+    },
+  ],
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+// 8-bit pixel display font — reserved for the logo and hero headings.
+const pixel = Press_Start_2P({
+  variable: "--font-pixel",
   subsets: ["latin"],
+  weight: "400",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -28,7 +45,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`dark ${jbMono.variable} ${pixel.variable} h-full antialiased`}
     >
       <body className="flex h-screen overflow-hidden">
         <Nav />
