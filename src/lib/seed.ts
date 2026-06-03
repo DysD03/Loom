@@ -92,13 +92,7 @@ function toCanvasGraph(raw: RawGraph): CanvasGraph {
     if (seen.has(key)) continue;
     seen.add(key);
     g.setEdge(source, target);
-    edges.push({
-      id: randomUUID(),
-      source,
-      target,
-      type: "smoothstep",
-      style: { stroke: "var(--neon-magenta)", strokeWidth: 2 },
-    });
+    edges.push({ id: randomUUID(), source, target });
   }
 
   dagre.layout(g);

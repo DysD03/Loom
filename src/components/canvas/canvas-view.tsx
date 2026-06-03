@@ -27,15 +27,30 @@ import { saveCanvasAction } from "@/app/canvas/actions";
 import { SendToOpencodeButton } from "@/components/opencode/send-button";
 
 const defaultEdgeOptions = {
-  type: "smoothstep" as const,
-  style: { stroke: "var(--neon-magenta)", strokeWidth: 2 },
+  // Smooth bezier curves read far cleaner than boxy steps when edges cross.
+  type: "default" as const,
+  style: {
+    stroke: "color-mix(in oklch, var(--neon-magenta), transparent 35%)",
+    strokeWidth: 1.5,
+  },
 };
+
+/** Drops per-edge type/style so every edge renders with the uniform default look. */
+function normalizeEdges(edges: Edge[]): Edge[] {
+  return edges.map((e) => ({
+    id: e.id,
+    source: e.source,
+    target: e.target,
+    sourceHandle: e.sourceHandle ?? undefined,
+    targetHandle: e.targetHandle ?? undefined,
+  }));
+}
 
 /** Positions nodes with dagre (top-to-bottom), respecting measured sizes when known. */
 function autoLayout(nodes: Node[], edges: Edge[]): Node[] {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 90 });
+  g.setGraph({ rankdir: "TB", nodesep: 90, ranksep: 130 });
 
   for (const node of nodes) {
     g.setNode(node.id, {
@@ -67,7 +82,7 @@ function Board({
   initialEdges: Edge[];
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(normalizeEdges(initialEdges));
   const [saved, setSaved] = useState(true);
   const { screenToFlowPosition, fitView } = useReactFlow();
   const firstRun = useRef(true);

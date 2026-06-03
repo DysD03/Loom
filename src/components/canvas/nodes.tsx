@@ -90,8 +90,6 @@ function AutoTextarea({
   );
 }
 
-const EDGE_STYLE = { stroke: "var(--neon-magenta)", strokeWidth: 2 };
-
 /** Shared editable node with an "expand with AI" affordance. */
 function EditableNode({
   id,
@@ -140,7 +138,7 @@ function EditableNode({
         position: { x: base.x + width + 96, y: base.y + height / 2 },
         data: { text: result.text },
       });
-      addEdges({ id: crypto.randomUUID(), source: id, target: newId, type: "smoothstep", style: EDGE_STYLE });
+      addEdges({ id: crypto.randomUUID(), source: id, target: newId });
       setExpanding(false);
       setQuestion("");
       toast.success("Added an expansion node");
