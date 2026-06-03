@@ -171,6 +171,27 @@ export const researchReports = sqliteTable(
 export type ResearchReport = typeof researchReports.$inferSelect;
 export type ResearchStatus = ResearchReport["status"];
 
+/**
+ * A Canvas board — a React Flow graph of idea/heading nodes and their edges,
+ * stored as JSON. Independent of conversations.
+ */
+export const canvases = sqliteTable("canvases", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull().default("Untitled canvas"),
+  /** JSON-encoded React Flow Node[]. */
+  nodes: text("nodes").notNull().default("[]"),
+  /** JSON-encoded React Flow Edge[]. */
+  edges: text("edges").notNull().default("[]"),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type Canvas = typeof canvases.$inferSelect;
+
 /** An MCP server entry managed from the Settings page. */
 export const mcpServers = sqliteTable("mcp_servers", {
   id: text("id").primaryKey(),
