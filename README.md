@@ -7,10 +7,10 @@ Five tabs (built phase by phase — see `PLAN.md`):
 - **Chat** — streaming conversational chat
 - **Agents** — chat that calls tools (built-in + MCP) in an agent loop
 - **Deep Research** — plan → search (SearXNG) → read → **cited report**, with live staged progress and a numbered source list matching the inline `[n]` citations
-- **Canvas** — a React Flow whiteboard for connected ideas: editable idea/heading nodes, free-form connections, drag/pan/zoom/multi-select, one-click **dagre auto-layout**, and debounced autosave
+- **Canvas** — a React Flow whiteboard for connected ideas: editable idea/heading nodes, free-form connections, drag/pan/zoom/multi-select, one-click **dagre auto-layout**, and debounced autosave. **Send to Canvas** (from Chat, Agents, or Deep Research) asks the model to distill the session into a concept map and seeds a new board
 - **Memory** — durable facts about you, used to personalize and suggest
 
-> **Status:** Phase 6 complete — **Chat**, **Memory**, **MCP + Tools**, **Agents**, **Deep Research**, and **Canvas** are all live. Next: "Send to Canvas" (Phase 7) and memory-driven suggestions (Phase 8).
+> **Status:** Phase 7 complete — **Chat**, **Memory**, **MCP + Tools**, **Agents**, **Deep Research**, and **Canvas** are all live, and any Chat/Agent/Research session can be turned into a Canvas concept map via **Send to Canvas**. Next: memory-driven suggestions (Phase 8).
 >
 > The UI wears an **8-bit retro / cyberpunk** skin: neon magenta + cyan on near-black, subtle CRT scanlines + vignette, fluid animations, a self-hosted **JetBrainsMono Nerd Font**, and a pixel display font (Press Start 2P) for the logo.
 >

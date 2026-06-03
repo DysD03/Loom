@@ -14,6 +14,7 @@ import { Markdown } from "@/components/markdown";
 import { CopyButton } from "@/components/copy-button";
 import { ModelSelect } from "@/components/chat/model-select";
 import { extractMemoriesAction } from "@/app/memory/actions";
+import { sendToCanvasAction } from "@/app/canvas/actions";
 import { ToolCallBlock } from "@/components/chat/tool-call-block";
 import { ReasoningBlock } from "@/components/chat/reasoning-block";
 
@@ -125,6 +126,7 @@ export function ChatView({
   const router = useRouter();
   const [input, setInput] = useState("");
   const [isExtracting, setIsExtracting] = useState(false);
+  const [isSeeding, setIsSeeding] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const transport = useMemo(
@@ -169,6 +171,28 @@ export function ChatView({
     }
   }
 
+  async function handleSendToCanvas() {
+    if (isSeeding) return;
+    setIsSeeding(true);
+    const toastId = toast.loading("Building a canvas from this session…");
+    try {
+      const result = await sendToCanvasAction(conversationId, "conversation");
+      if ("error" in result) {
+        toast.error("Send to Canvas failed", { id: toastId, description: result.error });
+        return;
+      }
+      toast.success("Canvas created", { id: toastId });
+      router.push(`/canvas?c=${result.canvasId}`);
+    } catch {
+      toast.error("Send to Canvas failed", {
+        id: toastId,
+        description: "Check the model connection in Settings.",
+      });
+    } finally {
+      setIsSeeding(false);
+    }
+  }
+
   async function handleExtract() {
     setIsExtracting(true);
     try {
@@ -203,14 +227,11 @@ export function ChatView({
           <Button
             variant="outline"
             size="sm"
-            onClick={() =>
-              toast.info("Send to Canvas", {
-                description: "Canvas seeding arrives in Phase 7.",
-              })
-            }
+            onClick={handleSendToCanvas}
+            disabled={isSeeding || messages.length === 0}
           >
             <Workflow className="size-4" />
-            Send to Canvas
+            {isSeeding ? "Building…" : "Send to Canvas"}
           </Button>
         </div>
       </header>

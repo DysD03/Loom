@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import {
   Check,
   CircleDashed,
@@ -10,6 +11,7 @@ import {
   Search,
   Sparkles,
   TriangleAlert,
+  Workflow,
 } from "lucide-react";
 
 import type { ResearchStatus } from "@/db/schema";
@@ -19,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Markdown } from "@/components/markdown";
 import { CopyButton } from "@/components/copy-button";
 import { ModelSelect } from "@/components/chat/model-select";
+import { sendToCanvasAction } from "@/app/canvas/actions";
 
 const STAGES: { key: ResearchStatus; label: string }[] = [
   { key: "planning", label: "Planning queries" },
@@ -93,6 +96,7 @@ export function ResearchView({
   );
   const [report, setReport] = useState(initialReport?.report ?? "");
   const [error, setError] = useState<string | null>(initialReport?.error ?? null);
+  const [isSeeding, setIsSeeding] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const stageIndex = stage ? STAGE_ORDER.indexOf(stage) : -1;
@@ -179,6 +183,28 @@ export function ResearchView({
     }
   }
 
+  async function handleSendToCanvas() {
+    if (isSeeding) return;
+    setIsSeeding(true);
+    const toastId = toast.loading("Building a canvas from this report…");
+    try {
+      const result = await sendToCanvasAction(conversationId, "research");
+      if ("error" in result) {
+        toast.error("Send to Canvas failed", { id: toastId, description: result.error });
+        return;
+      }
+      toast.success("Canvas created", { id: toastId });
+      router.push(`/canvas?c=${result.canvasId}`);
+    } catch {
+      toast.error("Send to Canvas failed", {
+        id: toastId,
+        description: "Check the model connection in Settings.",
+      });
+    } finally {
+      setIsSeeding(false);
+    }
+  }
+
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -192,7 +218,18 @@ export function ResearchView({
     <div className="flex h-full min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-6">
         <h1 className="truncate text-base font-semibold">{title}</h1>
-        <ModelSelect conversationId={conversationId} current={model} type="research" />
+        <div className="flex items-center gap-2">
+          <ModelSelect conversationId={conversationId} current={model} type="research" />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSendToCanvas}
+            disabled={isSeeding || running || !report}
+          >
+            <Workflow className="size-4" />
+            {isSeeding ? "Building…" : "Send to Canvas"}
+          </Button>
+        </div>
       </header>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
