@@ -22,13 +22,14 @@ interface FieldProps {
   id: keyof SettingsInput;
   label: string;
   hint?: string;
+  warning?: React.ReactNode;
   placeholder?: string;
   type?: string;
   value: string;
   onChange: (value: string) => void;
 }
 
-function Field({ id, label, hint, placeholder, type, value, onChange }: FieldProps) {
+function Field({ id, label, hint, warning, placeholder, type, value, onChange }: FieldProps) {
   return (
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
@@ -41,9 +42,20 @@ function Field({ id, label, hint, placeholder, type, value, onChange }: FieldPro
         autoComplete="off"
         spellCheck={false}
       />
+      {warning ? <div className="text-xs text-amber-600 dark:text-amber-400">{warning}</div> : null}
       {hint ? <p className="text-muted-foreground text-xs">{hint}</p> : null}
     </div>
   );
+}
+
+/** LM Studio / Ollama expose their OpenAI-compatible API under `/v1`. */
+function missingV1(url: string): boolean {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  return trimmed.length > 0 && !/\/v\d+$/.test(trimmed);
+}
+
+function withV1(url: string): string {
+  return `${url.trim().replace(/\/+$/, "")}/v1`;
 }
 
 export function SettingsForm({ initial }: { initial: SettingsInput }) {
@@ -112,6 +124,21 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
             placeholder="http://localhost:1234/v1"
             value={form.llmBaseUrl}
             onChange={setField("llmBaseUrl")}
+            warning={
+              missingV1(form.llmBaseUrl) ? (
+                <span className="flex flex-wrap items-center gap-1.5">
+                  This usually ends in <code className="bg-muted rounded px-1">/v1</code> — without
+                  it LM Studio/Ollama log “unexpected endpoint”.
+                  <button
+                    type="button"
+                    onClick={() => setField("llmBaseUrl")(withV1(form.llmBaseUrl))}
+                    className="underline underline-offset-2 hover:text-foreground"
+                  >
+                    Append /v1
+                  </button>
+                </span>
+              ) : null
+            }
           />
           <Field
             id="llmModel"
