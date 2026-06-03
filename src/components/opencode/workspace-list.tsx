@@ -160,7 +160,7 @@ export function WorkspaceList({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
-                        onSelect={() => {
+                        onClick={() => {
                           editValue.current = workspace.title;
                           setEditingId(workspace.id);
                         }}
@@ -170,7 +170,7 @@ export function WorkspaceList({
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         variant="destructive"
-                        onSelect={() => handleDelete(workspace.id)}
+                        onClick={() => handleDelete(workspace.id)}
                       >
                         <Trash2 className="size-4" />
                         Remove

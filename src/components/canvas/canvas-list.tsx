@@ -117,7 +117,7 @@ export function CanvasList({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
-                        onSelect={() => {
+                        onClick={() => {
                           editValue.current = canvas.title;
                           setEditingId(canvas.id);
                         }}
@@ -127,7 +127,7 @@ export function CanvasList({
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         variant="destructive"
-                        onSelect={() => handleDelete(canvas.id)}
+                        onClick={() => handleDelete(canvas.id)}
                       >
                         <Trash2 className="size-4" />
                         Delete

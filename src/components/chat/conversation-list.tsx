@@ -129,7 +129,7 @@ export function ConversationList({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
-                        onSelect={() => {
+                        onClick={() => {
                           editValue.current = conversation.title;
                           setEditingId(conversation.id);
                         }}
@@ -139,7 +139,7 @@ export function ConversationList({
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         variant="destructive"
-                        onSelect={() => handleDelete(conversation.id)}
+                        onClick={() => handleDelete(conversation.id)}
                       >
                         <Trash2 className="size-4" />
                         Delete
