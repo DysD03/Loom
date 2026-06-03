@@ -3,6 +3,7 @@ import { convertToModelMessages, streamText, type UIMessage } from "ai";
 import { getChatModel, textFromUIMessage } from "@/lib/provider";
 import { addMessage, getConversation } from "@/lib/conversations";
 import { formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
+import { formatChunksForPrompt, retrieveRelevantChunks } from "@/lib/documents";
 import { buildToolRegistry, stepCountIs } from "@/lib/tools";
 
 export const maxDuration = 120;
@@ -64,6 +65,16 @@ export async function POST(request: Request) {
     }
   } catch {
     // Memory retrieval is best-effort; never block chat on it.
+  }
+
+  try {
+    const chunks = await retrieveRelevantChunks(queryText);
+    const docBlock = formatChunksForPrompt(chunks);
+    if (docBlock) {
+      system = `${system}\n\n${docBlock}`;
+    }
+  } catch {
+    // Document retrieval is best-effort; never block chat on it.
   }
 
   let tools: Awaited<ReturnType<typeof buildToolRegistry>> | undefined;

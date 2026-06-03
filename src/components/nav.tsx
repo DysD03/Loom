@@ -10,6 +10,7 @@ import {
   Brain,
   Settings,
   SquareTerminal,
+  Library,
   type LucideIcon,
 } from "lucide-react";
 
@@ -27,6 +28,7 @@ const primaryItems: NavItem[] = [
   { href: "/research", label: "Deep Research", icon: Telescope },
   { href: "/canvas", label: "Canvas", icon: Workflow },
   { href: "/opencode", label: "OpenCode", icon: SquareTerminal },
+  { href: "/documents", label: "Documents", icon: Library },
   { href: "/memory", label: "Memory", icon: Brain },
 ];
 

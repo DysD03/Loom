@@ -10,6 +10,7 @@ import { getChatModel, textFromUIMessage } from "@/lib/provider";
 import { addMessage, getAgentConfig, getConversation } from "@/lib/conversations";
 import { getPersona } from "@/lib/personas";
 import { formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
+import { formatChunksForPrompt, retrieveRelevantChunks } from "@/lib/documents";
 import { buildToolRegistry, stepCountIs } from "@/lib/tools";
 import { checkToolSupport } from "@/lib/capabilities";
 import {
@@ -114,6 +115,16 @@ export async function POST(request: Request) {
     }
   } catch {
     // Memory retrieval is best-effort; never block the agent on it.
+  }
+
+  try {
+    const chunks = await retrieveRelevantChunks(queryText);
+    const docBlock = formatChunksForPrompt(chunks);
+    if (docBlock) {
+      baseSystem = `${baseSystem}\n\n${docBlock}`;
+    }
+  } catch {
+    // Document retrieval is best-effort; never block the agent on it.
   }
 
   // Only wire tools when the model can actually use them; otherwise degrade to

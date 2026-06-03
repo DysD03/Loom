@@ -216,6 +216,59 @@ export const workspaces = sqliteTable("workspaces", {
 
 export type Workspace = typeof workspaces.$inferSelect;
 
+/**
+ * An uploaded knowledge-base document for RAG. The raw text is split into
+ * `document_chunks`, each embedded for semantic retrieval. `status` tracks the
+ * ingestion lifecycle so the UI can show progress / failures.
+ */
+export const documents = sqliteTable("documents", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  /** Original uploaded file name. */
+  filename: text("filename").notNull().default(""),
+  /** Detected file kind used for parsing (e.g. "pdf", "text", "markdown"). */
+  kind: text("kind").notNull().default("text"),
+  sizeBytes: integer("size_bytes").notNull().default(0),
+  charCount: integer("char_count").notNull().default(0),
+  chunkCount: integer("chunk_count").notNull().default(0),
+  status: text("status", { enum: ["processing", "ready", "error"] })
+    .notNull()
+    .default("processing"),
+  /** Populated when status is "error". */
+  error: text("error"),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type Document = typeof documents.$inferSelect;
+export type DocumentStatus = Document["status"];
+
+/** A single embedded slice of a document's text, used for cosine retrieval. */
+export const documentChunks = sqliteTable(
+  "document_chunks",
+  {
+    id: text("id").primaryKey(),
+    documentId: text("document_id")
+      .notNull()
+      .references(() => documents.id, { onDelete: "cascade" }),
+    /** 0-based position of this chunk within the document. */
+    chunkIndex: integer("chunk_index").notNull().default(0),
+    content: text("content").notNull(),
+    /** JSON-encoded number[] embedding, or null when no embeddings model was available. */
+    embedding: text("embedding"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+  },
+  (t) => [index("document_chunks_document_idx").on(t.documentId, t.chunkIndex)],
+);
+
+export type DocumentChunk = typeof documentChunks.$inferSelect;
+
 /** An MCP server entry managed from the Settings page. */
 export const mcpServers = sqliteTable("mcp_servers", {
   id: text("id").primaryKey(),

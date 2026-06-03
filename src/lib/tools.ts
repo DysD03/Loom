@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { getAllMcpTools, callMcpTool } from "./mcp";
 import { fetchReadable, searxngSearch } from "./web";
+import { searchDocuments } from "./documents";
 
 export { stepCountIs };
 
@@ -23,6 +24,7 @@ export const BUILTIN_TOOL_KEYS = [
   "readUrl",
   "calculator",
   "currentDateTime",
+  "searchDocuments",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -216,6 +218,33 @@ function buildDateTimeTool() {
 }
 
 // ---------------------------------------------------------------------------
+// Built-in: search the user's uploaded documents (RAG knowledge base)
+// ---------------------------------------------------------------------------
+function buildSearchDocumentsTool() {
+  const inputSchema = z.object({
+    query: z.string().describe("What to look for in the user's uploaded documents"),
+    numResults: z
+      .number()
+      .int()
+      .min(1)
+      .max(10)
+      .optional()
+      .default(6)
+      .describe("Number of excerpts to return (1–10, default 6)"),
+  });
+  type Input = z.infer<typeof inputSchema>;
+
+  return tool({
+    description:
+      "Search the user's uploaded documents (their personal knowledge base) and return the " +
+      "most relevant excerpts with their source document. Use this to ground answers in the " +
+      "user's own files.",
+    inputSchema,
+    execute: async ({ query, numResults }: Input) => searchDocuments(query, numResults),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 /**
@@ -230,6 +259,7 @@ export async function buildToolRegistry(enabledKeys?: string[]): Promise<ToolSet
     readUrl: buildReadUrlTool(),
     calculator: buildCalculatorTool(),
     currentDateTime: buildDateTimeTool(),
+    searchDocuments: buildSearchDocumentsTool(),
   };
 
   const mcpTools = await getAllMcpTools();
@@ -273,6 +303,12 @@ export async function listAvailableTools(): Promise<ToolMeta[]> {
       key: "currentDateTime",
       name: "currentDateTime",
       description: "Get the current date and time",
+      source: "builtin",
+    },
+    {
+      key: "searchDocuments",
+      name: "searchDocuments",
+      description: "Search the user's uploaded documents",
       source: "builtin",
     },
     ...mcp.map((t) => ({

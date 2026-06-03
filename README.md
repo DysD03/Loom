@@ -9,16 +9,23 @@
 
 A personal, **local-first** web UI for your own local LLM. Everything runs on your machine — no cloud services, no telemetry, no accounts.
 
-Five tabs (built phase by phase — see `PLAN.md`):
+## Introduction
+
+**Loom** is a single, self-hosted workspace that wraps your local model (via LM Studio, Ollama, or any OpenAI-compatible server) in everything you'd actually want around it: streaming chat, a tool-using agent loop, deep research with cited reports, a visual idea canvas, a real coding agent, a personal knowledge base your model can read, and a memory that learns durable facts about you. It's built for people who want the convenience of a polished AI workspace without sending a single token to the cloud.
+
+The philosophy is simple: **your data, your machine, your model.** The app is a Next.js full-stack project backed by a local SQLite database — point it at a model, and every feature works entirely offline. Switching from LM Studio to Ollama (or any other OpenAI-compatible backend) is a base-URL change in Settings, nothing more. It was built phase by phase (see `PLAN.md`), and each capability lives on its own tab:
+
+Tabs (built phase by phase — see `PLAN.md`):
 
 - **Chat** — streaming conversational chat
 - **Agents** — chat that calls tools (built-in + MCP) in an agent loop
 - **Deep Research** — plan → search (SearXNG) → read → **cited report**, with live staged progress and a numbered source list matching the inline `[n]` citations
 - **Canvas** — a React Flow whiteboard for connected ideas: editable idea/heading nodes, free-form connections, drag/pan/zoom/multi-select, one-click **dagre auto-layout**, and debounced autosave. **Send to Canvas** (from Chat, Agents, or Deep Research) asks the model to distill the session into a concept map and seeds a new board
 - **OpenCode** — drive the [opencode](https://github.com/sst/opencode) coding agent to actually build/run projects on your machine. Add a project folder as a workspace, give it a task, and watch it work; **Send to OpenCode** turns a Chat/Agent/Research/Canvas session into a build task. Loom manages a local `opencode serve` for you
+- **Documents** — a local **RAG** knowledge base: drag-and-drop PDF, Markdown, and text files; Loom chunks + embeds them, then the model references the most relevant excerpts automatically in Chat and Agents (and on demand via a `searchDocuments` tool)
 - **Memory** — durable facts about you, used to personalize sessions and to generate launchable suggestions
 
-> **Status:** Phases 0–8 complete, plus an **OpenCode** tab (Phase 9) — **Chat**, **Memory**, **MCP + Tools**, **Agents**, **Deep Research**, **Canvas**, and **OpenCode** are all live. Sessions can be turned into a Canvas concept map via **Send to Canvas** or into a real build task via **Send to OpenCode**, and the Memory tab generates **personalized session suggestions** you can launch in one click.
+> **Status:** Phases 0–8 complete, plus an **OpenCode** tab (Phase 9) and a **Documents / RAG** tab (Phase 10) — **Chat**, **Memory**, **MCP + Tools**, **Agents**, **Deep Research**, **Canvas**, **OpenCode**, and **Documents** are all live. Sessions can be turned into a Canvas concept map via **Send to Canvas** or into a real build task via **Send to OpenCode**, uploaded files are referenced automatically via retrieval, and the Memory tab generates **personalized session suggestions** you can launch in one click.
 >
 > The UI wears an **8-bit retro / cyberpunk** skin: neon magenta + cyan on near-black, subtle CRT scanlines + vignette, fluid animations, a self-hosted **JetBrainsMono Nerd Font**, and a pixel display font (Press Start 2P) for the logo.
 >
@@ -115,20 +122,31 @@ Then in Loom: open **OpenCode → New workspace**, enter a project folder path (
 
 > ⚠️ The OpenCode tab executes code and shell commands on your machine in the folders you add. It's scoped to workspaces you explicitly choose, but it has a bigger blast radius than the rest of Loom — point it at projects you trust.
 
+## Documents (RAG)
+
+The **Documents** tab is a local retrieval-augmented-generation knowledge base. Drag files onto the uploader (or browse) and Loom extracts their text, splits it into overlapping chunks, and embeds each chunk for semantic search — all on your machine.
+
+- **Supported files** — PDF (parsed in-process via [`unpdf`](https://github.com/unjs/unpdf), no native dependencies), Markdown, and text formats (`.txt`, `.csv`, `.json`, `.yaml`, `.log`, …), up to 25 MB each.
+- **Automatic grounding** — for every Chat and Agent message, the most relevant excerpts are retrieved and injected into the system prompt, so answers are grounded in your own files and cite the source document by name.
+- **On-demand tool** — agents also get a built-in **`searchDocuments`** tool to query the knowledge base explicitly (toggleable per session like any other tool).
+
+> Documents need an **embeddings model** set in Settings (e.g. `nomic-embed-text` / `text-embedding-*`) to be searchable. Without one, files are still uploaded and chunked but won't be retrieved — the tab shows a notice when no embeddings model is configured.
+
 ## Project layout
 
 ```
 src/
-  app/            # routes: / (Chat), /agents, /research, /canvas, /memory, /settings
+  app/            # routes: / (Chat), /agents, /research, /canvas, /documents, /memory, /settings
     api/
-      chat/       # streaming chat route (tools + memory injection)
+      chat/       # streaming chat route (tools + memory + document injection)
       agent/      # agent route: multi-step tool loop, capability-gated tools
+      documents/  # multipart upload → parse → chunk → embed → store
       tools/      # available-tool list (for the per-session toggles)
       llm/        # ping + models endpoints
       mcp/        # servers CRUD + test connection
-  components/     # nav, chat view, tool-call + reasoning blocks, agent settings, shadcn/ui
+  components/     # nav, chat view, tool-call + reasoning blocks, agent settings, documents, shadcn/ui
   db/             # Drizzle schema + better-sqlite3 client
-  lib/            # settings, provider, memory, mcp client, tool registry, agent, capabilities
+  lib/            # settings, provider, memory, documents (RAG), mcp client, tool registry, agent, capabilities
 data/loom.db      # SQLite database (gitignored)
 drizzle/          # committed migrations
 ```
