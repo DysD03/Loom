@@ -71,6 +71,7 @@ function Board({
   const [saved, setSaved] = useState(true);
   const { screenToFlowPosition, fitView } = useReactFlow();
   const firstRun = useRef(true);
+  const addCount = useRef(0);
 
   // Debounced autosave whenever the graph changes (skip the initial load).
   useEffect(() => {
@@ -92,9 +93,12 @@ function Board({
 
   const addNode = useCallback(
     (type: CanvasNode["type"]) => {
+      // Cascade new nodes from near the viewport center so they don't stack.
+      const step = (addCount.current % 6) + 1;
+      addCount.current += 1;
       const position = screenToFlowPosition({
-        x: window.innerWidth / 2,
-        y: window.innerHeight / 2.5,
+        x: window.innerWidth / 2 - 110 + step * 28,
+        y: window.innerHeight / 3 + step * 26,
       });
       const node: CanvasNode = {
         id: crypto.randomUUID(),
@@ -124,6 +128,8 @@ function Board({
       connectionMode={ConnectionMode.Loose}
       deleteKeyCode={["Backspace", "Delete"]}
       multiSelectionKeyCode={["Meta", "Shift"]}
+      snapToGrid
+      snapGrid={[16, 16]}
       fitView
       proOptions={{ hideAttribution: true }}
       className="bg-transparent"
