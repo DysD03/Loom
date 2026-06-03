@@ -12,8 +12,12 @@ Five tabs (built phase by phase — see `PLAN.md`):
 
 > **Status:** Phase 4 complete — **Chat**, **Memory**, **MCP + Tools**, and **Agents** are live. Deep Research / Canvas are placeholders until their phases land.
 >
+> The UI wears an **8-bit retro / cyberpunk** skin: neon magenta + cyan on near-black, subtle CRT scanlines + vignette, fluid animations, a self-hosted **JetBrainsMono Nerd Font**, and a pixel display font (Press Start 2P) for the logo.
+>
 > - **Chat** — streaming, persisted, markdown + copyable code, per-conversation model override
 > - **Agents** — a multi-step tool-using loop on its own tab: built-in + MCP tools, streamed reasoning, an in-message step tracker, a per-session settings popover (max steps + tool toggles), and a tool-capability check that degrades to plain chat with a warning when the model can't call tools
+>   - **Personas** — a reusable library of named identities/system prompts (seeded with Loom, Senior Engineer, Skeptic, Researcher); assign one per session, with full create/edit/delete
+>   - **Self-dialogue** — the agent can debate itself (**Solver ↔ Critic**) for a configurable number of rounds before answering; the debate streams as collapsible reasoning, then a final synthesis answers with tools. Each voice can be cast from a persona
 > - **Memory** — durable facts with embeddings-based dedupe/retrieval, injected into every session; add/edit/delete/pin; on-demand extraction from chats
 > - **Tools** — built-in `searchWeb` (SearXNG), `readUrl` (fetch a page → readable text), `calculator`, and `currentDateTime`, wired into Chat and Agents; MCP servers (stdio + SSE/HTTP) managed from Settings, tools auto-loaded into the assistant. Tool calls and reasoning are persisted, so they replay when you reopen a conversation.
 >
