@@ -33,6 +33,12 @@ export const conversations = sqliteTable("conversations", {
   agentMaxSteps: integer("agent_max_steps"),
   /** Agent surface: JSON-encoded string[] of enabled tool keys; null means all tools. */
   agentTools: text("agent_tools"),
+  /** Agent surface: assigned persona; null means the built-in default identity. */
+  agentPersonaId: text("agent_persona_id").references(() => personas.id, {
+    onDelete: "set null",
+  }),
+  /** Agent surface: JSON-encoded SelfDialogueConfig (Solver/Critic debate); null means off. */
+  agentReasoning: text("agent_reasoning"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -58,6 +64,28 @@ export const messages = sqliteTable(
   },
   (t) => [index("messages_conversation_idx").on(t.conversationId, t.createdAt)],
 );
+
+/**
+ * A reusable agent persona — a named identity / system prompt. Personas can be
+ * assigned to an agent session and cast as the Solver/Critic voices in a
+ * self-dialogue. `builtin` rows are seeded defaults.
+ */
+export const personas = sqliteTable("personas", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  systemPrompt: text("system_prompt").notNull().default(""),
+  builtin: integer("builtin", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type Persona = typeof personas.$inferSelect;
+export type PersonaInsert = typeof personas.$inferInsert;
 
 export type Conversation = typeof conversations.$inferSelect;
 export type ConversationType = Conversation["type"];

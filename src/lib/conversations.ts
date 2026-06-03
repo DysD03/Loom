@@ -60,11 +60,54 @@ export function setConversationModel(
     .get();
 }
 
+/** Solver↔Critic self-dialogue settings for an agent session. */
+export interface SelfDialogueConfig {
+  enabled: boolean;
+  /** Number of Solver/Critic round trips before synthesizing the answer. */
+  rounds: number;
+  /** Persona cast as the Solver voice; null means a built-in Solver role. */
+  solverPersonaId: string | null;
+  /** Persona cast as the Critic voice; null means a built-in Critic role. */
+  criticPersonaId: string | null;
+}
+
 /** Per-session agent configuration. `null` fields mean "use defaults / all tools". */
 export interface AgentConfig {
   maxSteps: number | null;
   /** Enabled tool registry keys; null means all tools are enabled. */
   tools: string[] | null;
+  /** Assigned persona id; null means the built-in default identity. */
+  personaId: string | null;
+  selfDialogue: SelfDialogueConfig;
+}
+
+export const DEFAULT_SELF_DIALOGUE: SelfDialogueConfig = {
+  enabled: false,
+  rounds: 2,
+  solverPersonaId: null,
+  criticPersonaId: null,
+};
+
+function parseSelfDialogue(raw: string | null): SelfDialogueConfig {
+  if (!raw) {
+    return { ...DEFAULT_SELF_DIALOGUE };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<SelfDialogueConfig>;
+    return {
+      enabled: Boolean(parsed.enabled),
+      rounds:
+        typeof parsed.rounds === "number" && parsed.rounds > 0
+          ? Math.floor(parsed.rounds)
+          : DEFAULT_SELF_DIALOGUE.rounds,
+      solverPersonaId:
+        typeof parsed.solverPersonaId === "string" ? parsed.solverPersonaId : null,
+      criticPersonaId:
+        typeof parsed.criticPersonaId === "string" ? parsed.criticPersonaId : null,
+    };
+  } catch {
+    return { ...DEFAULT_SELF_DIALOGUE };
+  }
 }
 
 export function getAgentConfig(id: string): AgentConfig {
@@ -80,7 +123,12 @@ export function getAgentConfig(id: string): AgentConfig {
       // Corrupt JSON falls back to "all tools".
     }
   }
-  return { maxSteps: convo?.agentMaxSteps ?? null, tools };
+  return {
+    maxSteps: convo?.agentMaxSteps ?? null,
+    tools,
+    personaId: convo?.agentPersonaId ?? null,
+    selfDialogue: parseSelfDialogue(convo?.agentReasoning ?? null),
+  };
 }
 
 export function setAgentConfig(id: string, config: AgentConfig): Conversation | undefined {
@@ -89,6 +137,10 @@ export function setAgentConfig(id: string, config: AgentConfig): Conversation | 
     .set({
       agentMaxSteps: config.maxSteps && config.maxSteps > 0 ? Math.floor(config.maxSteps) : null,
       agentTools: config.tools ? JSON.stringify(config.tools) : null,
+      agentPersonaId: config.personaId ?? null,
+      agentReasoning: config.selfDialogue.enabled
+        ? JSON.stringify(config.selfDialogue)
+        : null,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(conversations.id, id))

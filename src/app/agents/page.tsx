@@ -4,6 +4,7 @@ import { ConversationList } from "@/components/chat/conversation-list";
 import { ChatView } from "@/components/chat/chat-view";
 import { AgentSettings } from "@/components/chat/agent-settings";
 import {
+  DEFAULT_SELF_DIALOGUE,
   getAgentConfig,
   getConversation,
   getMessages,
@@ -11,6 +12,7 @@ import {
   toUIMessages,
 } from "@/lib/conversations";
 import { checkToolSupport } from "@/lib/capabilities";
+import { listPersonas } from "@/lib/personas";
 import { AGENT_MAX_STEPS } from "@/lib/agent";
 
 export const dynamic = "force-dynamic";
@@ -32,6 +34,7 @@ export default async function AgentsPage({
 
   const agentConfig = activeAgent ? getAgentConfig(activeAgent.id) : null;
   const effectiveMaxSteps = agentConfig?.maxSteps ?? AGENT_MAX_STEPS;
+  const personas = activeAgent ? listPersonas() : [];
 
   return (
     <div className="flex h-full">
@@ -62,6 +65,9 @@ export default async function AgentsPage({
               conversationId={activeAgent.id}
               maxSteps={effectiveMaxSteps}
               enabledKeys={agentConfig?.tools ?? null}
+              personas={personas}
+              personaId={agentConfig?.personaId ?? null}
+              selfDialogue={agentConfig?.selfDialogue ?? DEFAULT_SELF_DIALOGUE}
             />
           }
         />

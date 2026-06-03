@@ -1,11 +1,28 @@
-import { convertToModelMessages, streamText, type UIMessage } from "ai";
+import {
+  convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  streamText,
+  type UIMessage,
+  type UIMessageStreamWriter,
+} from "ai";
 
 import { getChatModel, textFromUIMessage } from "@/lib/provider";
 import { addMessage, getAgentConfig, getConversation } from "@/lib/conversations";
+import { getPersona } from "@/lib/personas";
 import { formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
 import { buildToolRegistry, stepCountIs } from "@/lib/tools";
 import { checkToolSupport } from "@/lib/capabilities";
-import { AGENT_MAX_STEPS, AGENT_STEP_LIMIT, AGENT_SYSTEM_PROMPT } from "@/lib/agent";
+import {
+  AGENT_MAX_STEPS,
+  AGENT_STEP_LIMIT,
+  AGENT_SYSTEM_PROMPT,
+  DIALOGUE_MAX_ROUNDS,
+  buildCriticSystem,
+  buildSolverSystem,
+  buildSynthesisSystem,
+  buildTurnPrompt,
+} from "@/lib/agent";
 
 export const maxDuration = 300;
 
@@ -20,6 +37,21 @@ function hasPersistableContent(message: UIMessage): boolean {
     (p) => p.type !== "step-start" && (p.type !== "text" || p.text.trim().length > 0),
   );
 }
+
+function persistAssistant(conversationId: string, message: UIMessage): void {
+  if (message.role !== "assistant" || !hasPersistableContent(message)) {
+    return;
+  }
+  addMessage({
+    conversationId,
+    role: "assistant",
+    content: textFromUIMessage(message),
+    parts: message.parts,
+  });
+}
+
+const STREAM_FAIL =
+  "Check that the local LLM server is running and a tool-capable model is loaded (Settings → Test connection).";
 
 export async function POST(request: Request) {
   const body: AgentBody = await request.json().catch(() => ({}));
@@ -58,14 +90,19 @@ export async function POST(request: Request) {
     AGENT_STEP_LIMIT,
     Math.max(1, config.maxSteps ?? AGENT_MAX_STEPS),
   );
-
   const queryText = lastMessage?.role === "user" ? textFromUIMessage(lastMessage) : "";
-  let system = AGENT_SYSTEM_PROMPT;
+
+  // Persona drives the assistant's identity; the operational tool-loop guidance is appended.
+  const persona = config.personaId ? getPersona(config.personaId) : undefined;
+  let baseSystem = persona?.systemPrompt.trim()
+    ? `${persona.systemPrompt.trim()}\n\n${AGENT_SYSTEM_PROMPT}`
+    : AGENT_SYSTEM_PROMPT;
+
   try {
     const relevant = await retrieveRelevantMemories(queryText);
     const memoryBlock = formatMemoriesForPrompt(relevant);
     if (memoryBlock) {
-      system = `${AGENT_SYSTEM_PROMPT}\n\n${memoryBlock}`;
+      baseSystem = `${baseSystem}\n\n${memoryBlock}`;
     }
   } catch {
     // Memory retrieval is best-effort; never block the agent on it.
@@ -80,36 +117,99 @@ export async function POST(request: Request) {
       // config.tools null => all tools; [] => explicitly none.
       tools = await buildToolRegistry(config.tools ?? undefined);
     } else {
-      system = `${system}\n\nNote: tool calling is unavailable for the current model, so answer directly without tools.`;
+      baseSystem = `${baseSystem}\n\nNote: tool calling is unavailable for the current model, so answer directly without tools.`;
     }
   } catch {
     // Tools are best-effort; don't block the agent if the registry fails.
   }
 
-  const result = streamText({
-    model,
-    system,
-    messages: await convertToModelMessages(messages),
-    tools,
-    stopWhen: stepCountIs(maxSteps),
-  });
+  const modelMessages = await convertToModelMessages(messages);
 
-  return result.toUIMessageStreamResponse({
+  // --- Plain agent run (no self-dialogue): stream straight through. ---
+  if (!config.selfDialogue.enabled || !queryText) {
+    const result = streamText({
+      model,
+      system: baseSystem,
+      messages: modelMessages,
+      tools,
+      stopWhen: stepCountIs(maxSteps),
+    });
+
+    return result.toUIMessageStreamResponse({
+      originalMessages: messages,
+      onFinish: ({ responseMessage }) => persistAssistant(conversationId, responseMessage),
+      onError: (error) => {
+        const detail = error instanceof Error ? error.message : String(error);
+        return `The agent run failed: ${detail}. ${STREAM_FAIL}`;
+      },
+    });
+  }
+
+  // --- Self-dialogue run: Solver↔Critic debate streamed as reasoning, then synthesize. ---
+  const rounds = Math.min(DIALOGUE_MAX_ROUNDS, Math.max(1, config.selfDialogue.rounds));
+  const solverPersona = config.selfDialogue.solverPersonaId
+    ? getPersona(config.selfDialogue.solverPersonaId)
+    : undefined;
+  const criticPersona = config.selfDialogue.criticPersonaId
+    ? getPersona(config.selfDialogue.criticPersonaId)
+    : undefined;
+  const solverSystem = buildSolverSystem(solverPersona?.systemPrompt);
+  const criticSystem = buildCriticSystem(criticPersona?.systemPrompt);
+
+  const stream = createUIMessageStream<UIMessage>({
     originalMessages: messages,
-    onFinish: ({ responseMessage }) => {
-      if (responseMessage.role !== "assistant" || !hasPersistableContent(responseMessage)) {
-        return;
-      }
-      addMessage({
-        conversationId,
-        role: "assistant",
-        content: textFromUIMessage(responseMessage),
-        parts: responseMessage.parts,
-      });
-    },
+    onFinish: ({ responseMessage }) => persistAssistant(conversationId, responseMessage),
     onError: (error) => {
       const detail = error instanceof Error ? error.message : String(error);
-      return `The agent run failed: ${detail}. Check that the local LLM server is running and a tool-capable model is loaded (Settings → Test connection).`;
+      return `The agent run failed: ${detail}. ${STREAM_FAIL}`;
+    },
+    execute: async ({ writer }) => {
+      let transcript = "";
+
+      // Streams one debate turn into its own collapsible reasoning block and returns its text.
+      const runTurn = async (
+        role: "Solver" | "Critic",
+        roundNo: number,
+        system: string,
+        label: string,
+      ): Promise<string> => {
+        const id = `${role.toLowerCase()}-${roundNo}`;
+        writer.write({ type: "reasoning-start", id });
+        writer.write({ type: "reasoning-delta", id, delta: `${label}\n` });
+        const turn = streamText({
+          model,
+          system,
+          prompt: buildTurnPrompt(role, queryText, transcript),
+        });
+        let acc = "";
+        for await (const delta of turn.textStream) {
+          acc += delta;
+          writer.write({ type: "reasoning-delta", id, delta });
+        }
+        writer.write({ type: "reasoning-end", id });
+        return acc.trim();
+      };
+
+      for (let r = 1; r <= rounds; r++) {
+        const solver = await runTurn("Solver", r, solverSystem, `▸ Solver · round ${r}`);
+        transcript += `\n\nSOLVER (round ${r}):\n${solver}`;
+        const critic = await runTurn("Critic", r, criticSystem, `▸ Critic · round ${r}`);
+        transcript += `\n\nCRITIC (round ${r}):\n${critic}`;
+      }
+
+      // Final answer, informed by the deliberation, with tools available.
+      const result = streamText({
+        model,
+        system: buildSynthesisSystem(baseSystem, transcript),
+        messages: modelMessages,
+        tools,
+        stopWhen: stepCountIs(maxSteps),
+      });
+      writer.merge(
+        result.toUIMessageStream({ sendStart: false, sendFinish: false }),
+      );
     },
   });
+
+  return createUIMessageStreamResponse({ stream });
 }
