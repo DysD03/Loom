@@ -1,5 +1,12 @@
 # Loom
 
+
+<img width="1464" height="781" alt="image" src="https://github.com/user-attachments/assets/69030c54-ea33-4546-98a2-4603f00d5388" />
+
+
+
+
+
 A personal, **local-first** web UI for your own local LLM. Everything runs on your machine — no cloud services, no telemetry, no accounts.
 
 Five tabs (built phase by phase — see `PLAN.md`):
