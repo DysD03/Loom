@@ -201,14 +201,21 @@ function EditableNode({
       </NodeToolbar>
 
       {variant === "heading" ? (
-        <div className={cn("group px-1", selected && "rounded-sm ring-1 ring-primary")}>
+        <div
+          className={cn(
+            "group bg-card/95 w-56 rounded-md border border-l-4 px-3 py-2.5 shadow-sm backdrop-blur transition-shadow",
+            selected
+              ? "border-neon-cyan border-l-neon-cyan shadow-[0_0_16px_-2px_var(--neon-cyan)]"
+              : "border-border border-l-neon-cyan/70 hover:shadow-[0_0_18px_-8px_var(--neon-cyan)]",
+          )}
+        >
           <SideHandles />
           <AutoTextarea
             value={data.text}
             placeholder="Heading…"
             onChange={(text) => updateNodeData(id, { text })}
             onSelectRange={(s, e) => setSel({ start: s, end: e })}
-            className="text-neon-cyan text-glow-cyan w-72 text-lg font-bold tracking-wide uppercase"
+            className="text-neon-cyan text-glow-cyan text-base font-bold tracking-wide uppercase"
           />
         </div>
       ) : (

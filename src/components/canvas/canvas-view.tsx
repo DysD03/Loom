@@ -14,6 +14,7 @@ import {
   useNodesState,
   useReactFlow,
   ConnectionMode,
+  MarkerType,
   type Connection,
   type Edge,
   type Node,
@@ -23,12 +24,17 @@ import { Heading, LayoutGrid, Maximize, StickyNote } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { nodeTypes, type CanvasNode } from "@/components/canvas/nodes";
+import { FloatingEdge } from "@/components/canvas/floating-edge";
 import { saveCanvasAction } from "@/app/canvas/actions";
 import { SendToOpencodeButton } from "@/components/opencode/send-button";
 
+const edgeTypes = { floating: FloatingEdge };
+
 const defaultEdgeOptions = {
-  // Smooth bezier curves read far cleaner than boxy steps when edges cross.
-  type: "default" as const,
+  // Floating edges attach to the nearest node borders and follow them as nodes
+  // move, so lines stay clean instead of cutting through nodes.
+  type: "floating" as const,
+  markerEnd: { type: MarkerType.ArrowClosed, color: "var(--neon-magenta)", width: 18, height: 18 },
   style: {
     stroke: "color-mix(in oklch, var(--neon-magenta), transparent 35%)",
     strokeWidth: 1.5,
@@ -139,6 +145,7 @@ function Board({
       onEdgesChange={onEdgesChange}
       onConnect={onConnect}
       nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
       defaultEdgeOptions={defaultEdgeOptions}
       connectionMode={ConnectionMode.Loose}
       deleteKeyCode={["Backspace", "Delete"]}
