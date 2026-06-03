@@ -11,6 +11,10 @@ export const appSettings = sqliteTable("app_settings", {
   llmApiKey: text("llm_api_key").notNull().default("lm-studio"),
   llmModel: text("llm_model").notNull().default(""),
   embeddingsModel: text("embeddings_model").notNull().default(""),
+  /** Cloud provider API keys. Empty string means that provider is not configured. */
+  anthropicApiKey: text("anthropic_api_key").notNull().default(""),
+  openaiApiKey: text("openai_api_key").notNull().default(""),
+  googleApiKey: text("google_api_key").notNull().default(""),
   searxngUrl: text("searxng_url").notNull().default("http://localhost:8080"),
   updatedAt: text("updated_at")
     .notNull()

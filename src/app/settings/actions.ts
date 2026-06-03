@@ -10,6 +10,9 @@ export async function updateSettings(input: SettingsInput) {
     llmApiKey: input.llmApiKey.trim() || "lm-studio",
     llmModel: input.llmModel.trim(),
     embeddingsModel: input.embeddingsModel.trim(),
+    anthropicApiKey: input.anthropicApiKey.trim(),
+    openaiApiKey: input.openaiApiKey.trim(),
+    googleApiKey: input.googleApiKey.trim(),
     searxngUrl: input.searxngUrl.trim(),
   });
   revalidatePath("/settings");

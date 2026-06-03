@@ -29,7 +29,16 @@ export async function POST(request: Request) {
     return Response.json({ error: "conversation not found" }, { status: 404 });
   }
 
-  const { model, modelId } = getChatModel(conversation.model);
+  let model: ReturnType<typeof getChatModel>["model"];
+  let modelId: string;
+  try {
+    ({ model, modelId } = getChatModel(conversation.model));
+  } catch (err) {
+    return Response.json(
+      { error: err instanceof Error ? err.message : "Failed to build model." },
+      { status: 400 },
+    );
+  }
   if (!modelId) {
     return Response.json(
       { error: "No model configured. Set a model in Settings." },

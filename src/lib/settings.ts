@@ -10,7 +10,14 @@ const SETTINGS_ID = 1;
 /** Fields a user is allowed to edit from the Settings page. */
 export type SettingsInput = Pick<
   AppSettings,
-  "llmBaseUrl" | "llmApiKey" | "llmModel" | "embeddingsModel" | "searxngUrl"
+  | "llmBaseUrl"
+  | "llmApiKey"
+  | "llmModel"
+  | "embeddingsModel"
+  | "anthropicApiKey"
+  | "openaiApiKey"
+  | "googleApiKey"
+  | "searxngUrl"
 >;
 
 /** Returns the settings row, creating it with defaults on first access. */

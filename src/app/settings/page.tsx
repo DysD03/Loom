@@ -23,6 +23,9 @@ export default function SettingsPage() {
               llmApiKey: settings.llmApiKey,
               llmModel: settings.llmModel,
               embeddingsModel: settings.embeddingsModel,
+              anthropicApiKey: settings.anthropicApiKey,
+              openaiApiKey: settings.openaiApiKey,
+              googleApiKey: settings.googleApiKey,
               searxngUrl: settings.searxngUrl,
             }}
           />

@@ -64,6 +64,13 @@
       "when": 1780472255549,
       "tag": "0008_volatile_hellfire_club",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1780476800068,
+      "tag": "0009_fantastic_wonder_man",
+      "breakpoints": true
     }
   ]
 }

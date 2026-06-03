@@ -29,7 +29,7 @@ export default async function AgentsPage({
   const initialMessages = activeAgent ? toUIMessages(getMessages(activeAgent.id)) : [];
 
   // Probe tool capability only when a session is open (cached after the first call).
-  const support = activeAgent ? await checkToolSupport() : null;
+  const support = activeAgent ? await checkToolSupport(activeAgent.model) : null;
   const toolWarning = support && !support.supported ? (support.reason ?? null) : null;
 
   const agentConfig = activeAgent ? getAgentConfig(activeAgent.id) : null;

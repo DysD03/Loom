@@ -177,6 +177,50 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
 
       <Card>
         <CardHeader>
+          <CardTitle>Cloud providers</CardTitle>
+          <CardDescription>
+            Optional. Add an API key to use hosted models alongside your local one. Keys are
+            stored locally in the Loom database and only sent to the matching provider. Once a
+            key is set, that provider&apos;s models appear in the per-conversation model picker.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Field
+            id="anthropicApiKey"
+            label="Anthropic API key"
+            type="password"
+            placeholder="sk-ant-…"
+            hint="Powers Claude models (Opus / Sonnet / Haiku)."
+            value={form.anthropicApiKey}
+            onChange={setField("anthropicApiKey")}
+          />
+          <Field
+            id="openaiApiKey"
+            label="OpenAI API key"
+            type="password"
+            placeholder="sk-…"
+            hint="Powers GPT / o-series models."
+            value={form.openaiApiKey}
+            onChange={setField("openaiApiKey")}
+          />
+          <Field
+            id="googleApiKey"
+            label="Google AI API key"
+            type="password"
+            placeholder="AIza…"
+            hint="Powers Gemini models. Get one from Google AI Studio."
+            value={form.googleApiKey}
+            onChange={setField("googleApiKey")}
+          />
+          <Separator />
+          <Button onClick={handleSave} disabled={isSaving}>
+            {isSaving ? "Saving…" : "Save"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Web search</CardTitle>
           <CardDescription>
             SearXNG instance used by the search tool and Deep Research (wired up in later

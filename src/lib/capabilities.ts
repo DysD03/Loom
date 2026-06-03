@@ -1,5 +1,6 @@
 import "server-only";
 
+import { parseModel } from "./models";
 import { getSettings } from "./settings";
 
 export interface ToolSupport {
@@ -31,12 +32,17 @@ const g = globalThis as typeof globalThis & { __toolSupportCache?: CacheEntry };
  * - `supported: false, checked: true` → server rejected it (no tool support).
  * - `supported: true, checked: false` → couldn't reach the server; assume capable
  *   so we don't show a false warning (real connection errors surface in chat).
+ *
+ * `modelOverride` is the conversation's model (which may be a cloud model). Cloud
+ * providers all support tool calling, so we skip the probe entirely for them.
  */
-export async function checkToolSupport(force = false): Promise<ToolSupport> {
+export async function checkToolSupport(
+  modelOverride?: string | null,
+  force = false,
+): Promise<ToolSupport> {
   const settings = getSettings();
-  const model = settings.llmModel.trim();
-  const baseUrl = settings.llmBaseUrl.replace(/\/+$/, "");
-  const key = `${baseUrl}|${model}`;
+  const raw = (modelOverride && modelOverride.trim()) || settings.llmModel.trim();
+  const { provider, modelId: model } = parseModel(raw);
 
   if (!model) {
     return {
@@ -45,6 +51,14 @@ export async function checkToolSupport(force = false): Promise<ToolSupport> {
       reason: "No model is configured. Set one in Settings to use tools.",
     };
   }
+
+  // Cloud providers (Anthropic / OpenAI / Google) all support tool calling.
+  if (provider !== "local") {
+    return { supported: true, checked: true };
+  }
+
+  const baseUrl = settings.llmBaseUrl.replace(/\/+$/, "");
+  const key = `${baseUrl}|${model}`;
 
   const cached = g.__toolSupportCache;
   if (!force && cached && cached.key === key && cached.expires > Date.now()) {
