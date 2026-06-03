@@ -192,6 +192,26 @@ export const canvases = sqliteTable("canvases", {
 
 export type Canvas = typeof canvases.$inferSelect;
 
+/**
+ * An OpenCode workspace — a local project folder that the managed `opencode`
+ * server operates in (passed as the per-request `directory`). Loom tracks the
+ * folder + a friendly title; opencode owns the sessions/history inside it.
+ */
+export const workspaces = sqliteTable("workspaces", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull().default("Workspace"),
+  /** Absolute path to the project folder on the local machine. */
+  path: text("path").notNull(),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type Workspace = typeof workspaces.$inferSelect;
+
 /** An MCP server entry managed from the Settings page. */
 export const mcpServers = sqliteTable("mcp_servers", {
   id: text("id").primaryKey(),

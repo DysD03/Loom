@@ -8,9 +8,10 @@ Five tabs (built phase by phase — see `PLAN.md`):
 - **Agents** — chat that calls tools (built-in + MCP) in an agent loop
 - **Deep Research** — plan → search (SearXNG) → read → **cited report**, with live staged progress and a numbered source list matching the inline `[n]` citations
 - **Canvas** — a React Flow whiteboard for connected ideas: editable idea/heading nodes, free-form connections, drag/pan/zoom/multi-select, one-click **dagre auto-layout**, and debounced autosave. **Send to Canvas** (from Chat, Agents, or Deep Research) asks the model to distill the session into a concept map and seeds a new board
+- **OpenCode** — drive the [opencode](https://github.com/sst/opencode) coding agent to actually build/run projects on your machine. Add a project folder as a workspace, give it a task, and watch it work; **Send to OpenCode** turns a Chat/Agent/Research/Canvas session into a build task. Loom manages a local `opencode serve` for you
 - **Memory** — durable facts about you, used to personalize sessions and to generate launchable suggestions
 
-> **Status:** All planned phases (0–8) complete — **Chat**, **Memory**, **MCP + Tools**, **Agents**, **Deep Research**, and **Canvas** are live, sessions can be turned into a Canvas concept map via **Send to Canvas**, and the Memory tab generates **personalized session suggestions** you can launch in one click.
+> **Status:** Phases 0–8 complete, plus an **OpenCode** tab (Phase 9) — **Chat**, **Memory**, **MCP + Tools**, **Agents**, **Deep Research**, **Canvas**, and **OpenCode** are all live. Sessions can be turned into a Canvas concept map via **Send to Canvas** or into a real build task via **Send to OpenCode**, and the Memory tab generates **personalized session suggestions** you can launch in one click.
 >
 > The UI wears an **8-bit retro / cyberpunk** skin: neon magenta + cyan on near-black, subtle CRT scanlines + vignette, fluid animations, a self-hosted **JetBrainsMono Nerd Font**, and a pixel display font (Press Start 2P) for the logo.
 >
@@ -91,6 +92,21 @@ Add any [Model Context Protocol](https://modelcontextprotocol.io/) server from *
 - **SSE/HTTP** — specify the SSE endpoint URL (e.g. `http://localhost:3001/sse`).
 
 Click **Test** to connect and see how many tools the server exposes. Enabled servers are connected automatically on the next chat request and their tools are injected alongside the built-in tools. In the **Agents** tab you can toggle individual tools (built-in or MCP) on/off per session via the **Agent** settings popover.
+
+## OpenCode (run coding tasks locally)
+
+The **OpenCode** tab uses [opencode](https://github.com/sst/opencode) to build and run projects on your machine. Install it and configure a model provider first:
+
+```bash
+curl -fsSL https://opencode.ai/install | bash   # then ensure it's on your PATH
+opencode auth login                              # configure a model provider
+```
+
+> opencode uses **its own** provider config (separate from Loom's LM Studio settings). It can point at the same local model — set that up in opencode.
+
+Then in Loom: open **OpenCode → New workspace**, enter a project folder path (e.g. `~/dev/my-app`). Loom starts and manages a local `opencode serve` for you and addresses each workspace by folder — you never launch it manually. Give the agent a task and watch it edit files and run commands **in that folder**. From **Chat**, **Agents**, **Deep Research**, or **Canvas**, hit **Send to OpenCode** to turn that session into a build task.
+
+> ⚠️ The OpenCode tab executes code and shell commands on your machine in the folders you add. It's scoped to workspaces you explicitly choose, but it has a bigger blast radius than the rest of Loom — point it at projects you trust.
 
 ## Project layout
 

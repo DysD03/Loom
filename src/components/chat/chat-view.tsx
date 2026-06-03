@@ -15,6 +15,7 @@ import { CopyButton } from "@/components/copy-button";
 import { ModelSelect } from "@/components/chat/model-select";
 import { extractMemoriesAction } from "@/app/memory/actions";
 import { sendToCanvasAction } from "@/app/canvas/actions";
+import { SendToOpencodeButton } from "@/components/opencode/send-button";
 import { ToolCallBlock } from "@/components/chat/tool-call-block";
 import { ReasoningBlock } from "@/components/chat/reasoning-block";
 
@@ -235,6 +236,11 @@ export function ChatView({
             <Workflow className="size-4" />
             {isSeeding ? "Building…" : "Send to Canvas"}
           </Button>
+          <SendToOpencodeButton
+            sourceId={conversationId}
+            kind="conversation"
+            disabled={messages.length === 0}
+          />
         </div>
       </header>
 

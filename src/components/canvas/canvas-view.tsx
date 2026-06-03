@@ -24,6 +24,7 @@ import { Heading, LayoutGrid, Maximize, StickyNote } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { nodeTypes, type CanvasNode } from "@/components/canvas/nodes";
 import { saveCanvasAction } from "@/app/canvas/actions";
+import { SendToOpencodeButton } from "@/components/opencode/send-button";
 
 const defaultEdgeOptions = {
   type: "smoothstep" as const,
@@ -182,9 +183,12 @@ export function CanvasView({
     <div className="flex h-full min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-6">
         <h1 className="truncate text-base font-semibold">{title}</h1>
-        <p className="text-muted-foreground hidden text-[11px] sm:block">
-          Drag to connect · double-click text to edit · Del to remove
-        </p>
+        <div className="flex items-center gap-3">
+          <p className="text-muted-foreground hidden text-[11px] lg:block">
+            Drag to connect · double-click to edit · Del to remove
+          </p>
+          <SendToOpencodeButton sourceId={canvasId} kind="canvas" />
+        </div>
       </header>
       <div className="relative min-h-0 flex-1">
         <ReactFlowProvider>

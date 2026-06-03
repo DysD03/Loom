@@ -22,6 +22,7 @@ import { Markdown } from "@/components/markdown";
 import { CopyButton } from "@/components/copy-button";
 import { ModelSelect } from "@/components/chat/model-select";
 import { sendToCanvasAction } from "@/app/canvas/actions";
+import { SendToOpencodeButton } from "@/components/opencode/send-button";
 
 const STAGES: { key: ResearchStatus; label: string }[] = [
   { key: "planning", label: "Planning queries" },
@@ -233,6 +234,7 @@ export function ResearchView({
             <Workflow className="size-4" />
             {isSeeding ? "Building…" : "Send to Canvas"}
           </Button>
+          <SendToOpencodeButton sourceId={conversationId} kind="research" disabled={running || !report} />
         </div>
       </header>
 
