@@ -228,6 +228,10 @@ export const documents = sqliteTable("documents", {
   filename: text("filename").notNull().default(""),
   /** Detected file kind used for parsing (e.g. "pdf", "text", "markdown"). */
   kind: text("kind").notNull().default("text"),
+  /** Where the document came from: an uploaded file, or authored in the Editor tab. */
+  source: text("source", { enum: ["upload", "editor"] })
+    .notNull()
+    .default("upload"),
   sizeBytes: integer("size_bytes").notNull().default(0),
   charCount: integer("char_count").notNull().default(0),
   chunkCount: integer("chunk_count").notNull().default(0),
@@ -268,6 +272,29 @@ export const documentChunks = sqliteTable(
 );
 
 export type DocumentChunk = typeof documentChunks.$inferSelect;
+
+/**
+ * A Markdown document authored in the Editor tab. Independent of conversations.
+ * When saved it is mirrored into a `documents` row (source "editor") + chunks so
+ * the LLM can reference it in Chat/Agents; `documentId` links to that mirror.
+ */
+export const editorDocuments = sqliteTable("editor_documents", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull().default("Untitled document"),
+  content: text("content").notNull().default(""),
+  /** The mirrored RAG `documents` row, or null until first indexed. */
+  documentId: text("document_id").references(() => documents.id, {
+    onDelete: "set null",
+  }),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type EditorDocument = typeof editorDocuments.$inferSelect;
 
 /** An MCP server entry managed from the Settings page. */
 export const mcpServers = sqliteTable("mcp_servers", {

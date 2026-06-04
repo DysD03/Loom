@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, isToolUIPart, type UIMessage } from "ai";
+import { isToolUIPart, type UIMessage } from "ai";
+
+import { getChatInstance } from "@/lib/chat-store";
 import { toast } from "sonner";
 import { ArrowUp, Brain, Square, TriangleAlert, Workflow } from "lucide-react";
 
@@ -132,19 +134,34 @@ export function ChatView({
   const [isSeeding, setIsSeeding] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const transport = useMemo(
-    () => new DefaultChatTransport({ api, body: { conversationId } }),
-    [api, conversationId],
+  // A persistent Chat instance keyed by conversation id keeps the stream alive
+  // across tab switches (which unmount this view) — see lib/chat-store.ts.
+  const chat = useMemo(
+    () =>
+      getChatInstance({
+        id: conversationId,
+        api,
+        body: { conversationId },
+        initialMessages,
+      }),
+    [conversationId, api, initialMessages],
   );
 
-  const { messages, sendMessage, status, stop, error } = useChat({
-    id: conversationId,
-    messages: initialMessages,
-    transport,
-    onFinish: () => router.refresh(),
-  });
+  const { messages, sendMessage, status, stop, error } = useChat({ chat });
 
   const isStreaming = status === "submitted" || status === "streaming";
+
+  // Refresh server data (sidebar order, derived title) once a stream finishes.
+  // The Chat instance owns onFinish, so we watch the status transition here
+  // instead — this also fires correctly after returning from another tab.
+  const prevStatus = useRef(status);
+  useEffect(() => {
+    const was = prevStatus.current;
+    prevStatus.current = status;
+    if ((was === "streaming" || was === "submitted") && status === "ready") {
+      router.refresh();
+    }
+  }, [status, router]);
 
   // Live step counter for the currently streaming assistant message.
   const liveStep = useMemo(() => {

@@ -1,11 +1,11 @@
 import { getSettings } from "@/lib/settings";
-import { listDocuments } from "@/lib/documents";
+import { listUploadedDocuments } from "@/lib/documents";
 import { DocumentsView } from "@/components/documents/documents-view";
 
 export const dynamic = "force-dynamic";
 
 export default function DocumentsPage() {
-  const rows = listDocuments();
+  const rows = listUploadedDocuments();
   const embeddingsConfigured = Boolean(getSettings().embeddingsModel.trim());
 
   const docs = rows.map((d) => ({

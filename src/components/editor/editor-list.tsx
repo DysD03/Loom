@@ -2,7 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
+import { FileText, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -13,31 +13,23 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { ConversationType } from "@/db/schema";
-import { clearChatInstance } from "@/lib/chat-store";
 import {
-  deleteConversationAction,
-  newConversationAction,
-  renameConversationAction,
-} from "@/app/actions";
+  deleteEditorDocAction,
+  newEditorDocAction,
+  renameEditorDocAction,
+} from "@/app/editor/actions";
 
-interface ConversationSummary {
+interface DocSummary {
   id: string;
   title: string;
 }
 
-export function ConversationList({
-  conversations,
+export function EditorList({
+  documents,
   activeId,
-  type = "chat",
-  basePath = "/",
-  newLabel = "New chat",
 }: {
-  conversations: ConversationSummary[];
+  documents: DocSummary[];
   activeId?: string;
-  type?: ConversationType;
-  basePath?: string;
-  newLabel?: string;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -46,17 +38,16 @@ export function ConversationList({
 
   function handleNew() {
     startTransition(async () => {
-      const id = await newConversationAction(type);
-      router.push(`${basePath}?c=${id}`);
+      const id = await newEditorDocAction();
+      router.push(`/editor?d=${id}`);
     });
   }
 
   function handleDelete(id: string) {
-    clearChatInstance(id);
     startTransition(async () => {
-      await deleteConversationAction(id, type);
+      await deleteEditorDocAction(id);
       if (id === activeId) {
-        router.push(basePath);
+        router.push("/editor");
       } else {
         router.refresh();
       }
@@ -68,39 +59,39 @@ export function ConversationList({
     setEditingId(null);
     if (next) {
       startTransition(async () => {
-        await renameConversationAction(id, next, type);
+        await renameEditorDocAction(id, next);
         router.refresh();
       });
     }
   }
 
   return (
-    <div className="flex h-full w-64 shrink-0 flex-col border-r bg-sidebar/40">
+    <div className="bg-sidebar/40 flex h-full w-64 shrink-0 flex-col border-r">
       <div className="p-2">
         <Button onClick={handleNew} disabled={isPending} className="w-full justify-start gap-2">
           <Plus className="size-4" />
-          {newLabel}
+          New document
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-        {conversations.length === 0 ? (
-          <p className="px-3 py-6 text-center text-xs text-muted-foreground">
-            No conversations yet.
+        {documents.length === 0 ? (
+          <p className="text-muted-foreground px-3 py-6 text-center text-xs">
+            No documents yet.
           </p>
         ) : (
           <ul className="space-y-0.5">
-            {conversations.map((conversation) => {
-              const active = conversation.id === activeId;
-              if (editingId === conversation.id) {
+            {documents.map((doc) => {
+              const active = doc.id === activeId;
+              if (editingId === doc.id) {
                 return (
-                  <li key={conversation.id}>
+                  <li key={doc.id}>
                     <Input
                       autoFocus
-                      defaultValue={conversation.title}
+                      defaultValue={doc.title}
                       onChange={(e) => (editValue.current = e.target.value)}
-                      onBlur={() => commitRename(conversation.id)}
+                      onBlur={() => commitRename(doc.id)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") commitRename(conversation.id);
+                        if (e.key === "Enter") commitRename(doc.id);
                         if (e.key === "Escape") setEditingId(null);
                       }}
                       className="h-8 text-sm"
@@ -109,31 +100,32 @@ export function ConversationList({
                 );
               }
               return (
-                <li key={conversation.id} className="group relative">
+                <li key={doc.id} className="group relative">
                   <button
                     type="button"
-                    onClick={() => router.push(`${basePath}?c=${conversation.id}`)}
+                    onClick={() => router.push(`/editor?d=${doc.id}`)}
                     className={cn(
-                      "w-full truncate rounded-md py-2 pr-8 pl-3 text-left text-sm transition-colors",
+                      "flex w-full items-center gap-2 truncate rounded-md py-2 pr-8 pl-3 text-left text-sm transition-colors",
                       active
                         ? "bg-sidebar-accent text-sidebar-accent-foreground"
                         : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground",
                     )}
                   >
-                    {conversation.title}
+                    <FileText className="size-3.5 shrink-0 opacity-70" />
+                    <span className="truncate">{doc.title}</span>
                   </button>
                   <DropdownMenu>
                     <DropdownMenuTrigger
-                      aria-label="Conversation actions"
-                      className="absolute top-1.5 right-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:bg-accent data-[popup-open]:opacity-100"
+                      aria-label="Document actions"
+                      className="hover:bg-accent text-muted-foreground absolute top-1.5 right-1 rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 data-[popup-open]:opacity-100"
                     >
                       <MoreHorizontal className="size-4" />
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
                         onClick={() => {
-                          editValue.current = conversation.title;
-                          setEditingId(conversation.id);
+                          editValue.current = doc.title;
+                          setEditingId(doc.id);
                         }}
                       >
                         <Pencil className="size-4" />
@@ -141,7 +133,7 @@ export function ConversationList({
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         variant="destructive"
-                        onClick={() => handleDelete(conversation.id)}
+                        onClick={() => handleDelete(doc.id)}
                       >
                         <Trash2 className="size-4" />
                         Delete

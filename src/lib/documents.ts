@@ -25,6 +25,16 @@ export function listDocuments(): Document[] {
   return db.select().from(documents).orderBy(desc(documents.createdAt)).all();
 }
 
+/** Documents uploaded as files (excludes Editor-authored mirrors). */
+export function listUploadedDocuments(): Document[] {
+  return db
+    .select()
+    .from(documents)
+    .where(eq(documents.source, "upload"))
+    .orderBy(desc(documents.createdAt))
+    .all();
+}
+
 export function getDocument(id: string): Document | undefined {
   return db.select().from(documents).where(eq(documents.id, id)).get();
 }
@@ -97,6 +107,54 @@ async function embedChunks(texts: string[]): Promise<(number[] | null)[]> {
 }
 
 /**
+ * Chunks + embeds `text` and stores the chunks against an already-inserted
+ * document row, flipping its status to "ready". Throws if there is no text;
+ * the caller is responsible for recording the error on the row.
+ */
+async function finalizeIngest(id: string, text: string): Promise<Document> {
+  const chunks = chunkText(text);
+  if (chunks.length === 0) {
+    throw new Error("No extractable text found.");
+  }
+  const embeddings = await embedChunks(chunks);
+
+  db.insert(documentChunks)
+    .values(
+      chunks.map((content, i) => ({
+        id: randomUUID(),
+        documentId: id,
+        chunkIndex: i,
+        content,
+        embedding: embeddings[i] ? JSON.stringify(embeddings[i]) : null,
+      })),
+    )
+    .run();
+
+  return db
+    .update(documents)
+    .set({
+      status: "ready",
+      charCount: text.length,
+      chunkCount: chunks.length,
+      error: null,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(documents.id, id))
+    .returning()
+    .get();
+}
+
+function failIngest(id: string, err: unknown): Document {
+  const message = err instanceof Error ? err.message : "Failed to process document.";
+  return db
+    .update(documents)
+    .set({ status: "error", error: message, updatedAt: new Date().toISOString() })
+    .where(eq(documents.id, id))
+    .returning()
+    .get();
+}
+
+/**
  * Parses an uploaded file, chunks + embeds it, and stores the document with its
  * chunks. Creates the document row up front (status "processing") so a slow
  * embed pass is visible in the UI; flips to "ready" or "error" at the end.
@@ -117,6 +175,7 @@ export async function ingestDocument(input: {
       title: input.title.trim() || input.filename || "Untitled document",
       filename: input.filename,
       kind,
+      source: "upload",
       sizeBytes: input.buffer.byteLength,
       status: "processing",
     })
@@ -124,44 +183,41 @@ export async function ingestDocument(input: {
 
   try {
     const text = await extractText(input.buffer, kind);
-    const chunks = chunkText(text);
-    if (chunks.length === 0) {
-      throw new Error("No extractable text found in the file.");
-    }
-    const embeddings = await embedChunks(chunks);
-
-    db.insert(documentChunks)
-      .values(
-        chunks.map((content, i) => ({
-          id: randomUUID(),
-          documentId: id,
-          chunkIndex: i,
-          content,
-          embedding: embeddings[i] ? JSON.stringify(embeddings[i]) : null,
-        })),
-      )
-      .run();
-
-    return db
-      .update(documents)
-      .set({
-        status: "ready",
-        charCount: text.length,
-        chunkCount: chunks.length,
-        error: null,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(documents.id, id))
-      .returning()
-      .get();
+    return await finalizeIngest(id, text);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to process document.";
-    return db
-      .update(documents)
-      .set({ status: "error", error: message, updatedAt: new Date().toISOString() })
-      .where(eq(documents.id, id))
-      .returning()
-      .get();
+    return failIngest(id, err);
+  }
+}
+
+/**
+ * Ingests raw text (no file parsing) into the knowledge base — used to mirror
+ * Editor documents into RAG. Returns the created document row.
+ */
+export async function ingestTextDocument(input: {
+  title: string;
+  text: string;
+  source?: "upload" | "editor";
+  kind?: string;
+  filename?: string;
+}): Promise<Document> {
+  const id = randomUUID();
+  const title = input.title.trim() || "Untitled document";
+  db.insert(documents)
+    .values({
+      id,
+      title,
+      filename: input.filename ?? `${title}.md`,
+      kind: input.kind ?? "markdown",
+      source: input.source ?? "editor",
+      sizeBytes: Buffer.byteLength(input.text, "utf8"),
+      status: "processing",
+    })
+    .run();
+
+  try {
+    return await finalizeIngest(id, input.text);
+  } catch (err) {
+    return failIngest(id, err);
   }
 }
 

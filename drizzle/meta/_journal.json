@@ -78,6 +78,13 @@
       "when": 1780478140957,
       "tag": "0010_fixed_pestilence",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1780602914587,
+      "tag": "0011_wealthy_spitfire",
+      "breakpoints": true
     }
   ]
 }
