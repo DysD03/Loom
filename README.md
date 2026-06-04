@@ -22,11 +22,10 @@ Tabs (built phase by phase — see `PLAN.md`):
 - **Deep Research** — plan → search (SearXNG) → read → **cited report**, with live staged progress and a numbered source list matching the inline `[n]` citations
 - **Canvas** — a React Flow whiteboard for connected ideas: editable idea/heading nodes, free-form connections, drag/pan/zoom/multi-select, one-click **dagre auto-layout**, and debounced autosave. **Send to Canvas** (from Chat, Agents, or Deep Research) asks the model to distill the session into a concept map and seeds a new board
 - **OpenCode** — drive the [opencode](https://github.com/sst/opencode) coding agent to actually build/run projects on your machine. Add a project folder as a workspace, give it a task, and watch it work; **Send to OpenCode** turns a Chat/Agent/Research/Canvas session into a build task. Loom manages a local `opencode serve` for you
+- **Editor** — a Markdown document editor with live preview and built-in AI: inline **assist** (rewrite / expand / shorten / fix grammar) on a selection, a **doc-aware side chat** that always sees the current text, and a one-click **Verify use cases** review that surfaces gaps, contradictions, edge cases, and unstated assumptions. Documents you write are auto-saved and **indexed into the RAG knowledge base**, so Chat and Agents can reference them
 - **Documents** — a local **RAG** knowledge base: drag-and-drop PDF, Markdown, and text files; Loom chunks + embeds them, then the model references the most relevant excerpts automatically in Chat and Agents (and on demand via a `searchDocuments` tool)
 - **Memory** — durable facts about you, used to personalize sessions and to generate launchable suggestions
 
-> **Status:** Phases 0–8 complete, plus an **OpenCode** tab (Phase 9) and a **Documents / RAG** tab (Phase 10) — **Chat**, **Memory**, **MCP + Tools**, **Agents**, **Deep Research**, **Canvas**, **OpenCode**, and **Documents** are all live. Sessions can be turned into a Canvas concept map via **Send to Canvas** or into a real build task via **Send to OpenCode**, uploaded files are referenced automatically via retrieval, and the Memory tab generates **personalized session suggestions** you can launch in one click.
->
 > The UI wears an **8-bit retro / cyberpunk** skin: neon magenta + cyan on near-black, subtle CRT scanlines + vignette, fluid animations, a self-hosted **JetBrainsMono Nerd Font**, and a pixel display font (Press Start 2P) for the logo.
 >
 > - **Chat** — streaming, persisted, markdown + copyable code, per-conversation model override
@@ -122,6 +121,14 @@ Then in Loom: open **OpenCode → New workspace**, enter a project folder path (
 
 > ⚠️ The OpenCode tab executes code and shell commands on your machine in the folders you add. It's scoped to workspaces you explicitly choose, but it has a bigger blast radius than the rest of Loom — point it at projects you trust.
 
+## Editor
+
+The **Editor** tab is a distraction-light Markdown editor with a live preview, backed by the same local model.
+
+- **Inline assist** — select some text (or act on the whole document) and apply **Rewrite**, **Expand**, **Shorten**, or **Fix grammar**; the model's result replaces your selection in place.
+- **Doc-aware assistant** — a side-panel chat that always has the current document as context. Ask questions about the draft, or click **Verify use cases** for a structured review of gaps, contradictions, missing/edge cases, ambiguous requirements, and unstated assumptions.
+- **Auto-save + RAG indexing** — edits autosave as you write, and the document is mirrored into the Documents knowledge base so Chat and Agents can reference it (needs an embeddings model, same as uploads). Editor-authored docs are managed here, not in the Documents upload list.
+
 ## Documents (RAG)
 
 The **Documents** tab is a local retrieval-augmented-generation knowledge base. Drag files onto the uploader (or browse) and Loom extracts their text, splits it into overlapping chunks, and embeds each chunk for semantic search — all on your machine.
@@ -136,17 +143,18 @@ The **Documents** tab is a local retrieval-augmented-generation knowledge base. 
 
 ```
 src/
-  app/            # routes: / (Chat), /agents, /research, /canvas, /documents, /memory, /settings
+  app/            # routes: / (Chat), /agents, /research, /canvas, /opencode, /editor, /documents, /memory, /settings
     api/
       chat/       # streaming chat route (tools + memory + document injection)
       agent/      # agent route: multi-step tool loop, capability-gated tools
+      editor/     # doc-aware assistant chat for the Editor tab
       documents/  # multipart upload → parse → chunk → embed → store
       tools/      # available-tool list (for the per-session toggles)
       llm/        # ping + models endpoints
       mcp/        # servers CRUD + test connection
-  components/     # nav, chat view, tool-call + reasoning blocks, agent settings, documents, shadcn/ui
+  components/     # nav, chat view, tool-call + reasoning blocks, agent settings, editor, documents, shadcn/ui
   db/             # Drizzle schema + better-sqlite3 client
-  lib/            # settings, provider, memory, documents (RAG), mcp client, tool registry, agent, capabilities
+  lib/            # settings, provider, memory, documents (RAG), editor, chat-store, mcp client, tool registry, agent, capabilities
 data/loom.db      # SQLite database (gitignored)
 drizzle/          # committed migrations
 ```
