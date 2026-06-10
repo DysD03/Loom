@@ -1,6 +1,8 @@
 import { db } from "@/db/client";
 import { mcpServers } from "@/db/schema";
 import { getSettings } from "@/lib/settings";
+import { syncMcpServersFromFile } from "@/lib/mcp";
+import { MCP_CONFIG_FILENAME } from "@/lib/mcp-config";
 import { SettingsForm } from "./settings-form";
 import { McpServersCard } from "./mcp-servers";
 
@@ -8,6 +10,12 @@ export const dynamic = "force-dynamic";
 
 export default function SettingsPage() {
   const settings = getSettings();
+  let fileError: string | undefined;
+  try {
+    fileError = syncMcpServersFromFile().error;
+  } catch {
+    // ignore — show whatever is already persisted
+  }
   const servers = db.select().from(mcpServers).all();
 
   return (
@@ -29,7 +37,11 @@ export default function SettingsPage() {
               searxngUrl: settings.searxngUrl,
             }}
           />
-          <McpServersCard initial={servers} />
+          <McpServersCard
+            initial={servers}
+            fileError={fileError}
+            configFile={MCP_CONFIG_FILENAME}
+          />
         </div>
       </div>
     </div>

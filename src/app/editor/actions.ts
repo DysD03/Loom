@@ -11,6 +11,7 @@ import {
   saveEditorContent,
 } from "@/lib/editor";
 import { getChatModel } from "@/lib/provider";
+import { getLatestReport, loadReport, reportToMarkdown } from "@/lib/research";
 
 export async function newEditorDocAction(): Promise<string> {
   const doc = createEditorDocument();
@@ -51,6 +52,39 @@ export async function reindexEditorDocAction(
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Indexing failed." };
   }
+}
+
+/**
+ * Creates a new Editor document from a research conversation's latest finished
+ * report (title + report markdown + a Sources list), then best-effort indexes it
+ * into the RAG knowledge base. Returns the new document id for navigation.
+ */
+export async function sendReportToEditorAction(
+  conversationId: string,
+): Promise<{ docId: string } | { error: string }> {
+  const row = getLatestReport(conversationId);
+  if (!row) {
+    return { error: "No report found for this research yet." };
+  }
+  const report = loadReport(row);
+  if (!report.report.trim()) {
+    return { error: "This report is empty — run the research first." };
+  }
+
+  const { title, content } = reportToMarkdown(report);
+  const doc = createEditorDocument();
+  saveEditorContent(doc.id, { title, content });
+
+  // Mirror into the knowledge base so Chat/Agents can reference it. Best-effort:
+  // a missing embeddings model just leaves it un-indexed.
+  try {
+    await reindexEditorDocument(doc.id);
+  } catch {
+    // ignore — the document is saved and editable regardless
+  }
+
+  revalidatePath("/editor");
+  return { docId: doc.id };
 }
 
 export type AssistAction = "rewrite" | "expand" | "shorten" | "fix";

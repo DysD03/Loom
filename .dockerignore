@@ -1,0 +1,29 @@
+# Build artifacts & deps (reinstalled/rebuilt inside the image)
+node_modules
+.next
+out
+build
+
+# Local data — never bake the dev DB into the image (mount a volume instead)
+data
+
+# VCS & tooling
+.git
+.gitignore
+.vscode
+.idea
+
+# Env & secrets
+.env*
+*.pem
+mcp.json
+
+# Logs & OS cruft
+*.log
+npm-debug.log*
+.DS_Store
+
+# Docker files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml

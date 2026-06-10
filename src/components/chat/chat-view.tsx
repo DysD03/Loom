@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Markdown } from "@/components/markdown";
 import { CopyButton } from "@/components/copy-button";
 import { ModelSelect } from "@/components/chat/model-select";
+import { ContextMeter } from "@/components/chat/context-meter";
 import { extractMemoriesAction } from "@/app/memory/actions";
 import { sendToCanvasAction } from "@/app/canvas/actions";
 import { SendToOpencodeButton } from "@/components/opencode/send-button";
@@ -135,7 +136,10 @@ export function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // A persistent Chat instance keyed by conversation id keeps the stream alive
-  // across tab switches (which unmount this view) — see lib/chat-store.ts.
+  // across tab switches (which unmount this view) — see lib/chat-store.ts. The
+  // instance is keyed solely by id, so `initialMessages` is intentionally NOT a
+  // dependency: re-seeding (e.g. on router.refresh) must not replace the live
+  // instance and drop an in-flight or just-finished response.
   const chat = useMemo(
     () =>
       getChatInstance({
@@ -144,24 +148,13 @@ export function ChatView({
         body: { conversationId },
         initialMessages,
       }),
-    [conversationId, api, initialMessages],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [conversationId, api],
   );
 
   const { messages, sendMessage, status, stop, error } = useChat({ chat });
 
   const isStreaming = status === "submitted" || status === "streaming";
-
-  // Refresh server data (sidebar order, derived title) once a stream finishes.
-  // The Chat instance owns onFinish, so we watch the status transition here
-  // instead — this also fires correctly after returning from another tab.
-  const prevStatus = useRef(status);
-  useEffect(() => {
-    const was = prevStatus.current;
-    prevStatus.current = status;
-    if ((was === "streaming" || was === "submitted") && status === "ready") {
-      router.refresh();
-    }
-  }, [status, router]);
 
   // Live step counter for the currently streaming assistant message.
   const liveStep = useMemo(() => {
@@ -182,6 +175,10 @@ export function ChatView({
     }
     sendMessage({ text });
     setInput("");
+    // The sidebar title + ordering derive from the persisted user message, which
+    // the route writes before streaming. Refresh shortly after sending so the
+    // sidebar updates without disturbing the live stream when it finishes.
+    window.setTimeout(() => router.refresh(), 1200);
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -239,6 +236,7 @@ export function ChatView({
         <h1 className="truncate text-base font-semibold">{title}</h1>
         <div className="flex items-center gap-2">
           {headerActions}
+          <ContextMeter messages={messages} model={model} />
           <ModelSelect conversationId={conversationId} current={model} type={type} />
           <Button variant="outline" size="sm" onClick={handleExtract} disabled={isExtracting}>
             <Brain className="size-4" />

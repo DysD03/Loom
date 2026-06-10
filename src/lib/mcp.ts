@@ -9,7 +9,17 @@ import { db } from "@/db/client";
 import { mcpServers, type McpServer } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
+import { readMcpConfig } from "@/lib/mcp-config";
+
 export type { McpToolDef };
+
+/** Prefix marking a server whose definition is owned by the `mcp.json` file. */
+const FILE_ID_PREFIX = "file:";
+
+/** True when this server was declared in `mcp.json` (not added via the UI). */
+export function isFileManaged(serverId: string): boolean {
+  return serverId.startsWith(FILE_ID_PREFIX);
+}
 
 export interface McpToolWithServer extends McpToolDef {
   serverId: string;
@@ -97,8 +107,73 @@ export async function pingServer(
   };
 }
 
+/**
+ * Reconciles the `mcp.json` file into the `mcp_servers` table: file-declared
+ * servers are upserted under a `file:<name>` id, and file-managed rows that have
+ * since vanished from the file are removed. UI-added servers are untouched. A
+ * cached connection is dropped only when that server's config actually changed,
+ * so repeated syncs are cheap. Returns a file-level parse error, if any.
+ */
+export function syncMcpServersFromFile(): { error?: string } {
+  const { entries, error } = readMcpConfig();
+  if (error) return { error };
+
+  const wanted = new Map(entries.map((e) => [FILE_ID_PREFIX + e.name, e]));
+  const existing = db.select().from(mcpServers).all();
+  const existingById = new Map(existing.map((s) => [s.id, s]));
+
+  // Drop file-managed rows that are no longer declared in the file.
+  for (const s of existing) {
+    if (isFileManaged(s.id) && !wanted.has(s.id)) {
+      void disconnectServer(s.id);
+      db.delete(mcpServers).where(eq(mcpServers.id, s.id)).run();
+    }
+  }
+
+  // Upsert each declared server.
+  for (const [id, e] of wanted) {
+    const row = {
+      transport: e.transport,
+      command: e.command ?? null,
+      args: e.args ? JSON.stringify(e.args) : null,
+      url: e.url ?? null,
+      env: e.env ? JSON.stringify(e.env) : null,
+      enabled: e.enabled,
+    };
+    const before = existingById.get(id);
+
+    db.insert(mcpServers)
+      .values({ id, name: e.name, ...row })
+      .onConflictDoUpdate({
+        target: mcpServers.id,
+        set: { name: e.name, ...row, updatedAt: new Date().toISOString() },
+      })
+      .run();
+
+    // Reconnect on the next use only when the connection-relevant config moved.
+    if (
+      before &&
+      (before.transport !== row.transport ||
+        before.command !== row.command ||
+        before.args !== row.args ||
+        before.url !== row.url ||
+        before.env !== row.env)
+    ) {
+      void disconnectServer(id);
+    }
+  }
+
+  return {};
+}
+
 /** Returns all tools from all enabled + connected servers. */
 export async function getAllMcpTools(): Promise<McpToolWithServer[]> {
+  try {
+    syncMcpServersFromFile();
+  } catch {
+    // A bad config file must never break tool resolution for chat/agents.
+  }
+
   const servers = db
     .select()
     .from(mcpServers)

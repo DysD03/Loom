@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
-import { Plus, Trash2, RefreshCw, Check, X } from "lucide-react";
+import { Plus, Trash2, RefreshCw, Check, X, FileJson, AlertTriangle } from "lucide-react";
 
 import type { McpServer, McpTransport } from "@/db/schema";
 import { Button } from "@/components/ui/button";
@@ -230,6 +230,7 @@ function ServerRow({
   const [isTesting, setIsTesting] = useState(false);
   const [isDeleting, startDelete] = useTransition();
   const [isToggling, startToggle] = useTransition();
+  const fileManaged = server.id.startsWith("file:");
 
   async function handleTest() {
     setIsTesting(true);
@@ -257,11 +258,19 @@ function ServerRow({
   }
 
   function handleDelete() {
+    if (fileManaged && !confirm(`Remove "${server.name}" from mcp.json?`)) return;
     startDelete(async () => {
       try {
-        await fetch(`/api/mcp/servers?id=${server.id}`, { method: "DELETE" });
+        const res = await fetch(`/api/mcp/servers?id=${server.id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const { error } = (await res.json().catch(() => ({}))) as { error?: string };
+          toast.error(error ?? "Failed to remove server");
+          return;
+        }
         onDelete();
-        toast.success("MCP server removed");
+        toast.success(
+          fileManaged ? `Removed ${server.name} from mcp.json` : "MCP server removed",
+        );
       } catch {
         toast.error("Failed to remove server");
       }
@@ -299,6 +308,12 @@ function ServerRow({
           <Badge variant={server.transport === "stdio" ? "secondary" : "outline"} className="text-xs">
             {server.transport}
           </Badge>
+          {fileManaged && (
+            <Badge variant="outline" className="flex items-center gap-1 text-xs">
+              <FileJson className="size-3" />
+              file
+            </Badge>
+          )}
           {!server.enabled && (
             <Badge variant="outline" className="text-xs text-muted-foreground">
               disabled
@@ -331,22 +346,24 @@ function ServerRow({
           <RefreshCw className={`size-3.5 ${isTesting ? "animate-spin" : ""}`} />
           {isTesting ? "Testing…" : "Test"}
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleToggle}
-          disabled={isToggling}
-          title={server.enabled ? "Disable" : "Enable"}
-        >
-          {server.enabled ? "Disable" : "Enable"}
-        </Button>
+        {!fileManaged && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleToggle}
+            disabled={isToggling}
+            title={server.enabled ? "Disable" : "Enable"}
+          >
+            {server.enabled ? "Disable" : "Enable"}
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="sm"
           onClick={handleDelete}
           disabled={isDeleting}
           className="text-destructive hover:text-destructive"
-          title="Remove server"
+          title={fileManaged ? "Remove from mcp.json" : "Remove server"}
         >
           <Trash2 className="size-3.5" />
         </Button>
@@ -357,7 +374,15 @@ function ServerRow({
 
 // ─── Main component ──────────────────────────────────────────────────────────
 
-export function McpServersCard({ initial }: { initial: McpServer[] }) {
+export function McpServersCard({
+  initial,
+  fileError,
+  configFile = "mcp.json",
+}: {
+  initial: McpServer[];
+  fileError?: string;
+  configFile?: string;
+}) {
   const [servers, setServers] = useState<McpServer[]>(initial);
 
   function handleAdded(server: McpServer) {
@@ -378,10 +403,17 @@ export function McpServersCard({ initial }: { initial: McpServer[] }) {
         <CardTitle>MCP Servers</CardTitle>
         <CardDescription>
           Connect Model Context Protocol servers to extend the assistant with tools. Enabled
-          servers are automatically connected when a chat uses tools.
+          servers are automatically connected when a chat uses tools. You can also declare
+          servers in a <code className="text-xs">{configFile}</code> file at the project root.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {fileError && (
+          <div className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <span>{fileError}</span>
+          </div>
+        )}
         {servers.length > 0 ? (
           <>
             <div className="divide-y">

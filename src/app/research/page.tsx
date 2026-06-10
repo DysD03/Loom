@@ -2,7 +2,7 @@ import { Telescope } from "lucide-react";
 
 import { ConversationList } from "@/components/chat/conversation-list";
 import { ResearchView } from "@/components/research/research-view";
-import { getConversation, listConversations } from "@/lib/conversations";
+import { getConversation, getResearchConfig, listConversations } from "@/lib/conversations";
 import { getLatestReport, loadReport } from "@/lib/research";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +18,7 @@ export default async function ResearchPage({
   const activeResearch = active?.type === "research" ? active : undefined;
   const reportRow = activeResearch ? getLatestReport(activeResearch.id) : undefined;
   const report = reportRow ? loadReport(reportRow) : null;
+  const config = activeResearch ? getResearchConfig(activeResearch.id) : undefined;
 
   return (
     <div className="flex h-full">
@@ -31,13 +32,14 @@ export default async function ResearchPage({
         basePath="/research"
         newLabel="New research"
       />
-      {activeResearch ? (
+      {activeResearch && config ? (
         <ResearchView
           key={activeResearch.id}
           conversationId={activeResearch.id}
           title={activeResearch.title}
           model={activeResearch.model}
           initialReport={report}
+          config={config}
         />
       ) : (
         <div className="animate-fade-in-up flex flex-1 flex-col items-center justify-center gap-5 text-center">

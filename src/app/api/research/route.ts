@@ -1,5 +1,5 @@
 import { getChatModel } from "@/lib/provider";
-import { getConversation, renameConversation } from "@/lib/conversations";
+import { getConversation, getResearchConfig, renameConversation } from "@/lib/conversations";
 import { runResearch, type ResearchEvent } from "@/lib/research";
 
 export const maxDuration = 300;
@@ -46,13 +46,21 @@ export async function POST(request: Request) {
     renameConversation(conversationId, question);
   }
 
+  const config = getResearchConfig(conversationId);
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (event: ResearchEvent) =>
         controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
       try {
-        for await (const event of runResearch({ conversationId, question, model })) {
+        for await (const event of runResearch({
+          conversationId,
+          question,
+          model,
+          maxRounds: config.maxRounds,
+          tools: config.tools,
+        })) {
           send(event);
         }
       } catch (err) {

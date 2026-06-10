@@ -1,36 +1,49 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import type { UIMessage } from "ai";
 import { toast } from "sonner";
 import {
-  Check,
-  CircleDashed,
   ExternalLink,
+  Lightbulb,
   Loader2,
+  NotebookPen,
   Search,
   Sparkles,
+  Target,
   TriangleAlert,
   Workflow,
 } from "lucide-react";
 
 import type { ResearchStatus } from "@/db/schema";
-import type { LoadedReport, ResearchEvent, ResearchSource } from "@/lib/research";
+import type { ResearchConfig } from "@/lib/research-config";
+import type {
+  LoadedReport,
+  ResearchEvent,
+  ResearchRound,
+  ResearchSource,
+} from "@/lib/research";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Markdown } from "@/components/markdown";
 import { CopyButton } from "@/components/copy-button";
 import { ModelSelect } from "@/components/chat/model-select";
+import { ContextMeter } from "@/components/chat/context-meter";
+import { ResearchSettings } from "@/components/research/research-settings";
 import { sendToCanvasAction } from "@/app/canvas/actions";
+import { sendReportToEditorAction } from "@/app/editor/actions";
 import { SendToOpencodeButton } from "@/components/opencode/send-button";
 
-const STAGES: { key: ResearchStatus; label: string }[] = [
-  { key: "planning", label: "Planning queries" },
-  { key: "searching", label: "Searching the web" },
-  { key: "reading", label: "Reading sources" },
-  { key: "writing", label: "Writing report" },
-];
-const STAGE_ORDER: ResearchStatus[] = ["planning", "searching", "reading", "writing", "done"];
+const STATUS_LABEL: Record<ResearchStatus, string> = {
+  planning: "Planning the investigation",
+  searching: "Searching the web",
+  reading: "Reading sources",
+  reflecting: "Reflecting on findings",
+  writing: "Writing the report",
+  done: "Done",
+  error: "Error",
+};
 
 function hostname(url: string): string {
   try {
@@ -40,33 +53,77 @@ function hostname(url: string): string {
   }
 }
 
-function StageRow({
-  label,
-  state,
+function RoundCard({
+  round,
+  reading,
+  active,
 }: {
-  label: string;
-  state: "pending" | "active" | "done";
+  round: ResearchRound;
+  reading: { index: number; total: number; title: string } | null;
+  active: boolean;
 }) {
   return (
-    <div className="flex items-center gap-2 text-xs">
-      {state === "done" ? (
-        <Check className="text-neon-green size-3.5 shrink-0" />
-      ) : state === "active" ? (
-        <Loader2 className="text-neon-cyan size-3.5 shrink-0 animate-spin" />
-      ) : (
-        <CircleDashed className="text-muted-foreground/50 size-3.5 shrink-0" />
-      )}
-      <span
-        className={
-          state === "pending"
-            ? "text-muted-foreground/50"
-            : state === "active"
-              ? "text-foreground"
-              : "text-muted-foreground"
-        }
-      >
-        {label}
-      </span>
+    <div className="border-border/70 bg-card/40 space-y-2.5 rounded-lg border p-3">
+      <div className="flex items-center gap-2">
+        <span className="border-neon-cyan/40 text-neon-cyan rounded border px-1.5 py-0.5 font-mono text-[10px] tracking-wide">
+          ROUND {round.index}/{round.max}
+        </span>
+        {active ? <Loader2 className="text-neon-cyan size-3.5 animate-spin" /> : null}
+        {round.sufficient ? (
+          <span className="text-neon-green text-[11px]">evidence sufficient</span>
+        ) : null}
+      </div>
+
+      <p className="text-muted-foreground flex items-start gap-1.5 text-[11px]">
+        <Target className="mt-0.5 size-3 shrink-0" />
+        <span className="min-w-0 flex-1">{round.goal}</span>
+      </p>
+
+      {round.queries.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {round.queries.map((q) => (
+            <span
+              key={q}
+              className="border-border/70 bg-muted/40 text-muted-foreground rounded border px-1.5 py-0.5 text-[11px]"
+            >
+              {q}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      {active && reading ? (
+        <p className="text-muted-foreground flex items-center gap-1.5 text-[11px]">
+          <Loader2 className="size-3 animate-spin" />
+          Reading {reading.index}/{reading.total}: {reading.title}
+        </p>
+      ) : null}
+
+      {round.learnings.length > 0 ? (
+        <ul className="space-y-1">
+          {round.learnings.map((l, i) => (
+            <li key={i} className="flex items-start gap-1.5 text-xs">
+              <Lightbulb className="text-neon-green mt-0.5 size-3 shrink-0" />
+              <span className="text-foreground/90">{l}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {round.gaps.length > 0 && !round.sufficient ? (
+        <div className="border-border/50 border-t pt-2">
+          <p className="text-muted-foreground/80 mb-1 text-[10px] tracking-wide uppercase">
+            Still missing
+          </p>
+          <ul className="space-y-0.5">
+            {round.gaps.map((g, i) => (
+              <li key={i} className="text-muted-foreground text-[11px]">
+                · {g}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -76,11 +133,13 @@ export function ResearchView({
   title,
   model,
   initialReport,
+  config,
 }: {
   conversationId: string;
   title: string;
   model: string | null;
   initialReport: LoadedReport | null;
+  config: ResearchConfig;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -94,7 +153,7 @@ export function ResearchView({
   const [stage, setStage] = useState<ResearchStatus | null>(
     initialReport ? initialReport.status : null,
   );
-  const [queries, setQueries] = useState<string[]>(initialReport?.queries ?? []);
+  const [rounds, setRounds] = useState<ResearchRound[]>(initialReport?.rounds ?? []);
   const [sources, setSources] = useState<ResearchSource[]>(initialReport?.sources ?? []);
   const [reading, setReading] = useState<{ index: number; total: number; title: string } | null>(
     null,
@@ -102,11 +161,25 @@ export function ResearchView({
   const [report, setReport] = useState(initialReport?.report ?? "");
   const [error, setError] = useState<string | null>(initialReport?.error ?? null);
   const [isSeeding, setIsSeeding] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const stageIndex = stage ? STAGE_ORDER.indexOf(stage) : -1;
   const usedSources = sources.filter((s) => s.used);
   const otherSources = sources.filter((s) => !s.used);
+  const activeRound = running ? rounds[rounds.length - 1]?.index : undefined;
+
+  // A synthetic transcript so the context meter reflects the model's context
+  // pressure for this run (question + gathered findings + report + snippets).
+  const contextMessages = useMemo<UIMessage[]>(() => {
+    const msgs: UIMessage[] = [];
+    const q = (initialReport?.question ?? question).trim();
+    if (q) msgs.push({ id: "q", role: "user", parts: [{ type: "text", text: q }] });
+    const findings = rounds.flatMap((r) => r.learnings).join("\n");
+    const snippets = sources.map((s) => s.snippet).join("\n");
+    const body = [findings, snippets, report].filter(Boolean).join("\n\n");
+    if (body) msgs.push({ id: "ctx", role: "assistant", parts: [{ type: "text", text: body }] });
+    return msgs;
+  }, [initialReport, question, rounds, sources, report]);
 
   function handleEvent(event: ResearchEvent) {
     switch (event.type) {
@@ -114,13 +187,43 @@ export function ResearchView({
         setStage(event.status);
         break;
       case "plan":
-        setQueries(event.queries);
+        // The initial queries also arrive as round 1's queries; nothing to do.
+        break;
+      case "round":
+        setReading(null);
+        setRounds((prev) => [
+          ...prev,
+          {
+            index: event.index,
+            max: event.max,
+            goal: event.goal,
+            queries: event.queries,
+            learnings: [],
+            gaps: [],
+            sufficient: false,
+          },
+        ]);
         break;
       case "sources":
         setSources(event.sources);
         break;
       case "reading":
         setReading({ index: event.index, total: event.total, title: event.title });
+        break;
+      case "reflection":
+        setReading(null);
+        setRounds((prev) =>
+          prev.map((r) =>
+            r.index === event.round
+              ? {
+                  ...r,
+                  learnings: event.learnings,
+                  gaps: event.gaps,
+                  sufficient: event.sufficient,
+                }
+              : r,
+          ),
+        );
         break;
       case "report-delta":
         setReport((prev) => prev + event.delta);
@@ -143,7 +246,7 @@ export function ResearchView({
     setRunning(true);
     setError(null);
     setReport("");
-    setQueries([]);
+    setRounds([]);
     setSources([]);
     setReading(null);
     setStage("planning");
@@ -210,6 +313,25 @@ export function ResearchView({
     }
   }
 
+  async function handleSendToEditor() {
+    if (isExporting) return;
+    setIsExporting(true);
+    const toastId = toast.loading("Sending the report to the editor…");
+    try {
+      const result = await sendReportToEditorAction(conversationId);
+      if ("error" in result) {
+        toast.error("Send to Editor failed", { id: toastId, description: result.error });
+        return;
+      }
+      toast.success("Opened in editor", { id: toastId });
+      router.push(`/editor?d=${result.docId}`);
+    } catch {
+      toast.error("Send to Editor failed", { id: toastId });
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -217,14 +339,25 @@ export function ResearchView({
     }
   }
 
-  const showProgress = running || (stage !== null && stage !== "done" && stage !== "error");
+  const busy = running && stage !== null && stage !== "done" && stage !== "error";
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-6">
         <h1 className="truncate text-base font-semibold">{title}</h1>
         <div className="flex items-center gap-2">
+          <ContextMeter messages={contextMessages} model={model} />
           <ModelSelect conversationId={conversationId} current={model} type="research" />
+          <ResearchSettings conversationId={conversationId} config={config} disabled={running} />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSendToEditor}
+            disabled={isExporting || running || !report}
+          >
+            <NotebookPen className="size-4" />
+            {isExporting ? "Sending…" : "Send to Editor"}
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -271,36 +404,25 @@ export function ResearchView({
             </div>
           </div>
 
-          {/* Progress */}
-          {showProgress ? (
-            <div className="border-border/70 bg-card/40 space-y-3 rounded-lg border p-4">
-              <div className="space-y-1.5">
-                {STAGES.map((s) => {
-                  const idx = STAGE_ORDER.indexOf(s.key);
-                  const state =
-                    stageIndex > idx ? "done" : stageIndex === idx ? "active" : "pending";
-                  return <StageRow key={s.key} label={s.label} state={state} />;
-                })}
-              </div>
+          {/* Live activity badge */}
+          {busy ? (
+            <div className="text-neon-cyan flex items-center gap-2 text-xs">
+              <Loader2 className="size-3.5 animate-spin" />
+              {stage ? STATUS_LABEL[stage] : "Working…"}
+            </div>
+          ) : null}
 
-              {queries.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {queries.map((q) => (
-                    <span
-                      key={q}
-                      className="border-border/70 bg-muted/40 text-muted-foreground rounded border px-1.5 py-0.5 text-[11px]"
-                    >
-                      {q}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-
-              {reading ? (
-                <p className="text-muted-foreground text-[11px]">
-                  Reading {reading.index}/{reading.total}: {reading.title}
-                </p>
-              ) : null}
+          {/* Research log — one card per round */}
+          {rounds.length > 0 ? (
+            <div className="space-y-2.5">
+              {rounds.map((r) => (
+                <RoundCard
+                  key={r.index}
+                  round={r}
+                  reading={reading}
+                  active={running && r.index === activeRound}
+                />
+              ))}
             </div>
           ) : null}
 
@@ -324,7 +446,7 @@ export function ResearchView({
               </div>
               <Markdown>{report}</Markdown>
               {!running ? (
-                <div className="opacity-0 transition-opacity group-hover:opacity-100">
+                <div className="flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
                   <CopyButton value={report} label="Copy report" />
                 </div>
               ) : null}

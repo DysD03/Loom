@@ -1,0 +1,21 @@
+services:
+  loom:
+    build: .
+    image: loom
+    container_name: loom
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persist the SQLite DB + uploaded documents across rebuilds.
+      - ./data:/app/data
+      # Optional: declare MCP servers via a file (see README → MCP servers).
+      # - ./mcp.json:/app/mcp.json:ro
+    # Lets the container reach an LLM server (LM Studio / Ollama) running on the
+    # host. In Loom's Settings, set the Base URL to e.g.
+    #   http://host.docker.internal:1234/v1   (LM Studio)
+    #   http://host.docker.internal:11434/v1  (Ollama)
+    # On Docker Desktop (Windows/Mac) this host is resolved automatically; the
+    # mapping below makes it work on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

@@ -13,6 +13,24 @@ import {
   type Message,
   type MessageRole,
 } from "@/db/schema";
+import {
+  DEFAULT_RESEARCH_ROUNDS,
+  DEFAULT_RESEARCH_TOOLS,
+  RESEARCH_ROUNDS_MAX,
+  RESEARCH_ROUNDS_MIN,
+  RESEARCH_TOOL_KEYS,
+  type ResearchConfig,
+  type ResearchToolKey,
+} from "./research-config";
+
+export type { ResearchConfig, ResearchToolKey } from "./research-config";
+export {
+  RESEARCH_TOOL_KEYS,
+  DEFAULT_RESEARCH_ROUNDS,
+  RESEARCH_ROUNDS_MIN,
+  RESEARCH_ROUNDS_MAX,
+  DEFAULT_RESEARCH_TOOLS,
+} from "./research-config";
 
 const TITLE_MAX = 60;
 
@@ -141,6 +159,50 @@ export function setAgentConfig(id: string, config: AgentConfig): Conversation | 
       agentReasoning: config.selfDialogue.enabled
         ? JSON.stringify(config.selfDialogue)
         : null,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(conversations.id, id))
+    .returning()
+    .get();
+}
+
+export function getResearchConfig(id: string): ResearchConfig {
+  const convo = getConversation(id);
+  let tools: ResearchToolKey[] = [...DEFAULT_RESEARCH_TOOLS];
+  if (convo?.researchTools) {
+    try {
+      const parsed = JSON.parse(convo.researchTools) as unknown;
+      if (Array.isArray(parsed)) {
+        const valid = parsed.filter(
+          (t): t is ResearchToolKey =>
+            typeof t === "string" && (RESEARCH_TOOL_KEYS as readonly string[]).includes(t),
+        );
+        tools = valid;
+      }
+    } catch {
+      // Corrupt JSON falls back to the defaults.
+    }
+  }
+  const rounds = convo?.researchMaxRounds ?? DEFAULT_RESEARCH_ROUNDS;
+  return {
+    maxRounds: Math.min(RESEARCH_ROUNDS_MAX, Math.max(RESEARCH_ROUNDS_MIN, rounds)),
+    tools,
+  };
+}
+
+export function setResearchConfig(id: string, config: ResearchConfig): Conversation | undefined {
+  const rounds = Math.min(
+    RESEARCH_ROUNDS_MAX,
+    Math.max(RESEARCH_ROUNDS_MIN, Math.floor(config.maxRounds) || DEFAULT_RESEARCH_ROUNDS),
+  );
+  const tools = config.tools.filter((t) =>
+    (RESEARCH_TOOL_KEYS as readonly string[]).includes(t),
+  );
+  return db
+    .update(conversations)
+    .set({
+      researchMaxRounds: rounds,
+      researchTools: JSON.stringify(tools),
       updatedAt: new Date().toISOString(),
     })
     .where(eq(conversations.id, id))

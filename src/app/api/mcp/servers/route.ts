@@ -3,13 +3,20 @@ import { randomUUID } from "crypto";
 
 import { db } from "@/db/client";
 import { mcpServers, type McpTransport } from "@/db/schema";
-import { disconnectServer } from "@/lib/mcp";
+import { disconnectServer, isFileManaged, syncMcpServersFromFile } from "@/lib/mcp";
+import { MCP_CONFIG_FILENAME, removeMcpConfigEntry } from "@/lib/mcp-config";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  let fileError: string | undefined;
+  try {
+    fileError = syncMcpServersFromFile().error;
+  } catch {
+    // ignore — fall back to whatever is already in the DB
+  }
   const servers = db.select().from(mcpServers).all();
-  return Response.json(servers);
+  return Response.json({ servers, fileError: fileError ?? null });
 }
 
 interface ServerBody {
@@ -70,6 +77,9 @@ export async function PATCH(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
   if (!id) return Response.json({ error: "id is required" }, { status: 400 });
+  if (isFileManaged(id)) {
+    return Response.json({ error: `Edit this server in ${MCP_CONFIG_FILENAME}` }, { status: 409 });
+  }
 
   const body: PatchBody = await request.json().catch(() => ({}));
   const update: Partial<typeof mcpServers.$inferInsert> = {
@@ -100,6 +110,17 @@ export async function DELETE(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
   if (!id) return Response.json({ error: "id is required" }, { status: 400 });
+
+  // File-declared servers live in mcp.json; remove the entry there so it doesn't
+  // get re-synced, then let the sync drop the row + connection.
+  if (isFileManaged(id)) {
+    const server = db.select().from(mcpServers).where(eq(mcpServers.id, id)).get();
+    if (!server) return new Response(null, { status: 204 });
+    const result = removeMcpConfigEntry(server.name);
+    if (!result.ok) return Response.json({ error: result.error }, { status: 409 });
+    syncMcpServersFromFile();
+    return new Response(null, { status: 204 });
+  }
 
   await disconnectServer(id);
   db.delete(mcpServers).where(eq(mcpServers.id, id)).run();

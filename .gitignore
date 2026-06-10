@@ -43,3 +43,7 @@ next-env.d.ts
 # local database (keep the dir, ignore its contents)
 /data/*
 !/data/.gitkeep
+
+# MCP servers config — may hold secrets/tokens (commit mcp.example.json instead).
+# Delete this line if your mcp.json has no secrets and you want to commit it.
+/mcp.json

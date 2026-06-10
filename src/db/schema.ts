@@ -43,6 +43,10 @@ export const conversations = sqliteTable("conversations", {
   }),
   /** Agent surface: JSON-encoded SelfDialogueConfig (Solver/Critic debate); null means off. */
   agentReasoning: text("agent_reasoning"),
+  /** Research surface: max search→read→reflect rounds; null means the default. */
+  researchMaxRounds: integer("research_max_rounds"),
+  /** Research surface: JSON-encoded string[] of enabled tool/source keys; null means defaults. */
+  researchTools: text("research_tools"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -156,7 +160,7 @@ export const researchReports = sqliteTable(
     /** Final report markdown. */
     report: text("report").notNull().default(""),
     status: text("status", {
-      enum: ["planning", "searching", "reading", "writing", "done", "error"],
+      enum: ["planning", "searching", "reading", "reflecting", "writing", "done", "error"],
     })
       .notNull()
       .default("planning"),

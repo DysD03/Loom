@@ -28,7 +28,7 @@ Tabs (built phase by phase — see `PLAN.md`):
 
 > The UI wears an **8-bit retro / cyberpunk** skin: neon magenta + cyan on near-black, subtle CRT scanlines + vignette, fluid animations, a self-hosted **JetBrainsMono Nerd Font**, and a pixel display font (Press Start 2P) for the logo.
 >
-> - **Chat** — streaming, persisted, markdown + copyable code, per-conversation model override
+> - **Chat** — streaming, persisted, markdown + copyable code, per-conversation model override, and a live **context-window usage meter** (estimated tokens used vs. the loaded model's context length)
 > - **Agents** — a multi-step tool-using loop on its own tab: built-in + MCP tools, streamed reasoning, an in-message step tracker, a per-session settings popover (max steps + tool toggles), and a tool-capability check that degrades to plain chat with a warning when the model can't call tools
 >   - **Personas** — a reusable library of named identities/system prompts (seeded with Loom, Senior Engineer, Skeptic, Researcher); assign one per session, with full create/edit/delete
 >   - **Self-dialogue** — the agent can debate itself (**Solver ↔ Critic**) for a configurable number of rounds before answering; the debate streams as collapsible reasoning, then a final synthesis answers with tools. Each voice can be cast from a persona
@@ -54,6 +54,40 @@ npm install
 npm run db:migrate   # create ./data/loom.db from migrations
 npm run dev          # http://localhost:3000
 ```
+
+## Run with Docker
+
+Loom ships a multi-stage `Dockerfile` and a `docker-compose.yml`. Migrations are
+applied automatically on container start, and the SQLite DB + uploaded documents
+are persisted to the host via the `./data` volume.
+
+```bash
+docker compose up -d --build   # build + run, http://localhost:3000
+```
+
+Or with plain Docker:
+
+```bash
+docker build -t loom .
+docker run -d --name loom -p 3000:3000 \
+  -v "$PWD/data:/app/data" \
+  --add-host host.docker.internal:host-gateway \
+  loom
+```
+
+**Point Loom at your LLM:** the model server (LM Studio / Ollama) runs on the
+**host**, not in the container, so `localhost` won't reach it from inside. In
+**Settings → Base URL**, use `host.docker.internal` instead:
+
+- LM Studio → `http://host.docker.internal:1234/v1`
+- Ollama → `http://host.docker.internal:11434/v1`
+
+(On Docker Desktop for Windows/Mac that host resolves automatically; the compose
+file and the `--add-host` flag above make it work on Linux too.)
+
+> Same caveats as the LAN setup: there's **no authentication** — keep the
+> published port on a trusted network. To declare MCP servers via a file,
+> uncomment the `mcp.json` mount in `docker-compose.yml`.
 
 ## Configure your LLM
 
@@ -85,11 +119,66 @@ On Windows PowerShell, replace `"$PWD/searxng"` with `"${PWD}\searxng"`.
 
 ---
 
+## Access from another device on your home network
+
+Loom is just a web app, so any laptop/phone on the same Wi-Fi can use it once the
+server listens on the LAN and the firewall lets the port through. The LLM, SearXNG,
+and OpenCode all keep running on the **host** machine — only the browser moves.
+
+1. **Find the host's LAN IP** (the machine running Loom). In PowerShell:
+
+   ```powershell
+   (Get-NetIPAddress -AddressFamily IPv4 |
+     Where-Object { $_.IPAddress -like '192.168.*' -or $_.IPAddress -like '10.*' }).IPAddress
+   ```
+
+   Say it's `192.168.1.50`.
+
+2. **Allow the port through Windows Firewall** (run PowerShell as Administrator, once):
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "Loom 3000" -Direction Inbound `
+     -Action Allow -Protocol TCP -LocalPort 3000 -Profile Private
+   ```
+
+   `-Profile Private` keeps it to networks you've marked as "private" (home), not public ones.
+
+3. **Start Loom bound to the LAN.** For a stable home server, use the production build:
+
+   ```bash
+   npm run build
+   npm run start:lan        # listens on 0.0.0.0:3000
+   ```
+
+   For development with hot-reload over the LAN, just use `dev:lan` — the host's
+   own LAN IPs are auto-added to `allowedDevOrigins` so cross-origin navigation
+   and Server Actions work:
+
+   ```bash
+   npm run dev:lan
+   ```
+
+   (Add more origins, e.g. a hostname, via `LOOM_DEV_ORIGINS=host1,host2` if needed.)
+
+4. **On the other laptop**, open `http://192.168.1.50:3000`.
+
+Notes:
+
+- There's **no authentication** — anyone on your network can use it. Keep it to a
+  trusted home LAN; don't forward the port to the internet.
+- Settings like the **LLM Base URL** stay `http://localhost:...` — they're resolved
+  on the host, not the visiting browser, so leave them as-is.
+- A different port: pass `-p`, e.g. `npm run start:lan -- -p 4000`, and open that
+  port in the firewall rule.
+
+---
+
 ## Scripts
 
 | Command | Purpose |
 |---|---|
 | `npm run dev` | Dev server (http://localhost:3000) |
+| `npm run dev:lan` / `npm run start:lan` | Same, but listening on the whole LAN (`-H 0.0.0.0`) |
 | `npm run build` / `npm run start` | Production build / serve |
 | `npm run lint` / `npm run typecheck` | ESLint / TypeScript |
 | `npm run format` | Prettier write |
@@ -105,6 +194,28 @@ Add any [Model Context Protocol](https://modelcontextprotocol.io/) server from *
 - **SSE/HTTP** — specify the SSE endpoint URL (e.g. `http://localhost:3001/sse`).
 
 Click **Test** to connect and see how many tools the server exposes. Enabled servers are connected automatically on the next chat request and their tools are injected alongside the built-in tools. In the **Agents** tab you can toggle individual tools (built-in or MCP) on/off per session via the **Agent** settings popover.
+
+### Declaring servers in a file
+
+Instead of the UI, you can drop an `mcp.json` file at the project root. It uses the same `mcpServers` shape as Claude Desktop, so you can paste a server's published config straight in. Copy `mcp.example.json` to get started:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\me\\notes"]
+    },
+    "remote-sse": { "url": "http://localhost:3001/sse" },
+    "turned-off": { "command": "npx", "args": ["-y", "pkg"], "disabled": true }
+  }
+}
+```
+
+- A server with a `url` is treated as **SSE/HTTP**; otherwise it's **stdio** and needs a `command`. `env` is an optional object of strings. Set `"disabled": true` to keep an entry without connecting it.
+- File-declared servers appear in **Settings → MCP Servers** with a **file** badge. Edit the file to change them; you can **Test** them, and **Delete** removes the entry from `mcp.json` (so it stays gone). UI-added servers are left untouched.
+- The file is re-read on each Settings load and whenever tools are resolved — no restart needed. Parse errors are shown in the MCP Servers card.
+- `mcp.json` is **gitignored** by default because it can hold tokens (the `env` block). Remove the `/mcp.json` line from `.gitignore` if yours has no secrets and you want to commit it.
 
 ## OpenCode (run coding tasks locally)
 
