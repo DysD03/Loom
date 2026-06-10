@@ -1,9 +1,17 @@
-import { convertToModelMessages, streamText, type UIMessage } from "ai";
+import {
+  convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  streamText,
+  type UIMessage,
+} from "ai";
 
 import { getChatModel, textFromUIMessage } from "@/lib/provider";
 import { addMessage, getConversation } from "@/lib/conversations";
 import { embedText, formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
 import { formatChunksForPrompt, retrieveRelevantChunks } from "@/lib/documents";
+import { buildRetrievalInfo } from "@/lib/transparency";
+import { RETRIEVAL_PART_TYPE } from "@/lib/retrieval";
 import { buildToolRegistry, stepCountIs } from "@/lib/tools";
 
 export const maxDuration = 120;
@@ -50,8 +58,15 @@ export async function POST(request: Request) {
   const lastMessage = messages[messages.length - 1];
   if (lastMessage?.role === "user") {
     const text = textFromUIMessage(lastMessage);
-    if (text) {
-      addMessage({ conversationId, role: "user", content: text });
+    const hasFiles = lastMessage.parts.some((p) => p.type === "file");
+    if (text || hasFiles) {
+      addMessage({
+        conversationId,
+        role: "user",
+        content: text,
+        // Persist parts only when attachments exist so plain text stays lean.
+        parts: hasFiles ? lastMessage.parts : undefined,
+      });
     }
   }
 
@@ -62,34 +77,26 @@ export async function POST(request: Request) {
   // retrieval), then run both retrievals concurrently.
   const toolsPromise = buildToolRegistry().catch(() => undefined);
   const queryEmbedding = queryText ? await embedText(queryText).catch(() => null) : null;
-  const [memoryBlock, docBlock] = await Promise.all([
-    retrieveRelevantMemories(queryText, undefined, queryEmbedding)
-      .then(formatMemoriesForPrompt)
-      .catch(() => ""),
-    retrieveRelevantChunks(queryText, undefined, queryEmbedding)
-      .then(formatChunksForPrompt)
-      .catch(() => ""),
+  const [memoriesUsed, chunksUsed] = await Promise.all([
+    retrieveRelevantMemories(queryText, undefined, queryEmbedding).catch(() => []),
+    retrieveRelevantChunks(queryText, undefined, queryEmbedding).catch(() => []),
   ]);
 
   let system = SYSTEM_PROMPT;
+  const memoryBlock = formatMemoriesForPrompt(memoriesUsed);
   if (memoryBlock) {
     system = `${system}\n\n${memoryBlock}`;
   }
+  const docBlock = formatChunksForPrompt(chunksUsed);
   if (docBlock) {
     system = `${system}\n\n${docBlock}`;
   }
 
+  const retrieval = buildRetrievalInfo(memoriesUsed, chunksUsed);
   const tools = await toolsPromise;
+  const modelMessages = await convertToModelMessages(messages);
 
-  const result = streamText({
-    model,
-    system,
-    messages: await convertToModelMessages(messages),
-    tools,
-    stopWhen: stepCountIs(5),
-  });
-
-  return result.toUIMessageStreamResponse({
+  const stream = createUIMessageStream<UIMessage>({
     originalMessages: messages,
     onFinish: ({ responseMessage }) => {
       if (responseMessage.role !== "assistant") {
@@ -97,7 +104,7 @@ export async function POST(request: Request) {
       }
       const text = textFromUIMessage(responseMessage);
       const hasTools = responseMessage.parts.some(
-        (p) => p.type !== "step-start" && p.type !== "text",
+        (p) => p.type !== "step-start" && p.type !== "text" && p.type !== RETRIEVAL_PART_TYPE,
       );
       if (text.trim() || hasTools) {
         addMessage({
@@ -112,5 +119,22 @@ export async function POST(request: Request) {
       const detail = error instanceof Error ? error.message : String(error);
       return `The local LLM request failed: ${detail}. Check that the server is running and a tool-capable model is loaded (Settings → Test connection).`;
     },
+    execute: ({ writer }) => {
+      // Surface what was injected into the system prompt as a collapsible
+      // "Context used" block; the part persists with the message for replay.
+      if (retrieval) {
+        writer.write({ type: RETRIEVAL_PART_TYPE, data: retrieval });
+      }
+      const result = streamText({
+        model,
+        system,
+        messages: modelMessages,
+        tools,
+        stopWhen: stepCountIs(5),
+      });
+      writer.merge(result.toUIMessageStream({ sendStart: !retrieval }));
+    },
   });
+
+  return createUIMessageStreamResponse({ stream });
 }

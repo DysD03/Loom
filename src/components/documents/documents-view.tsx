@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Check,
   FileText,
+  Link as LinkIcon,
   Loader2,
   Pencil,
   Trash2,
@@ -19,7 +20,11 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { deleteDocumentAction, renameDocumentAction } from "@/app/documents/actions";
+import {
+  deleteDocumentAction,
+  ingestUrlAction,
+  renameDocumentAction,
+} from "@/app/documents/actions";
 
 const ACCEPT = ".pdf,.txt,.md,.markdown,.csv,.json,.log,.tsv,.yaml,.yml";
 
@@ -162,6 +167,52 @@ function Dropzone({ onUploaded }: { onUploaded: () => void }) {
   );
 }
 
+function UrlIngest({ onIngested }: { onIngested: () => void }) {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function submit() {
+    const trimmed = url.trim();
+    if (!trimmed || loading) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await ingestUrlAction(trimmed);
+      if (result.ok) {
+        toast.success("Page added to the knowledge base", { description: result.title });
+        setUrl("");
+        onIngested();
+      } else {
+        toast.error("Could not ingest URL", { description: result.error });
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <div className="relative flex-1">
+        <LinkIcon className="text-muted-foreground absolute top-1/2 left-2.5 size-4 -translate-y-1/2" />
+        <Input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void submit();
+          }}
+          placeholder="https://… — fetch a web page into the knowledge base"
+          className="pl-8"
+          disabled={loading}
+        />
+      </div>
+      <Button onClick={() => void submit()} disabled={loading || !url.trim()}>
+        {loading ? <Loader2 className="size-4 animate-spin" /> : "Add page"}
+      </Button>
+    </div>
+  );
+}
+
 function DocumentRow({ doc }: { doc: DocumentView }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -290,6 +341,8 @@ export function DocumentsView({
       ) : null}
 
       <Dropzone onUploaded={() => router.refresh()} />
+
+      <UrlIngest onIngested={() => router.refresh()} />
 
       {documents.length === 0 ? (
         <p className="text-muted-foreground py-10 text-center text-sm">

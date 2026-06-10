@@ -29,6 +29,9 @@ const envOrigins =
 const allowedDevOrigins = [...new Set([...lanOrigins(), ...envOrigins])];
 
 const nextConfig: NextConfig = {
+  // sqlite-vec locates its platform-specific loadable extension on disk at
+  // runtime, so it must stay external to the server bundle.
+  serverExternalPackages: ["sqlite-vec"],
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
 };
 

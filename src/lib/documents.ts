@@ -2,13 +2,15 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import { embed, embedMany } from "ai";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/db/client";
 import { documentChunks, documents, type Document } from "@/db/schema";
 import { getEmbeddingModel } from "./provider";
 import { detectKind, extractText } from "./extract";
+import { indexChunkVectors, removeChunkVectors, searchChunkVectors } from "./vec";
 import { cosineSimilarity, parseVector } from "./vectors";
+import { fetchReadable } from "./web";
 
 const CHUNK_SIZE = 1_000;
 const CHUNK_OVERLAP = 150;
@@ -36,8 +38,15 @@ export function getDocument(id: string): Document | undefined {
 }
 
 export function deleteDocument(id: string): void {
-  // document_chunks cascade on delete.
+  const chunkIds = db
+    .select({ id: documentChunks.id })
+    .from(documentChunks)
+    .where(eq(documentChunks.documentId, id))
+    .all()
+    .map((r) => r.id);
+  // document_chunks cascade on delete; the vec index has no FK, so clean it up.
   db.delete(documents).where(eq(documents.id, id)).run();
+  removeChunkVectors(chunkIds);
 }
 
 export function renameDocument(id: string, title: string): Document | undefined {
@@ -114,17 +123,21 @@ async function finalizeIngest(id: string, text: string): Promise<Document> {
   }
   const embeddings = await embedChunks(chunks);
 
-  db.insert(documentChunks)
-    .values(
-      chunks.map((content, i) => ({
-        id: randomUUID(),
-        documentId: id,
-        chunkIndex: i,
-        content,
-        embedding: embeddings[i] ? JSON.stringify(embeddings[i]) : null,
-      })),
-    )
-    .run();
+  const rows = chunks.map((content, i) => ({
+    id: randomUUID(),
+    documentId: id,
+    chunkIndex: i,
+    content,
+    embedding: embeddings[i] ? JSON.stringify(embeddings[i]) : null,
+  }));
+  db.insert(documentChunks).values(rows).run();
+
+  indexChunkVectors(
+    rows.flatMap((row, i) => {
+      const embedding = embeddings[i];
+      return embedding ? [{ id: row.id, embedding }] : [];
+    }),
+  );
 
   return db
     .update(documents)
@@ -217,6 +230,32 @@ export async function ingestTextDocument(input: {
   }
 }
 
+/** How much readable page text a URL ingest keeps (well past any article's length). */
+const URL_MAX_CHARS = 200_000;
+
+/**
+ * Fetches a web page, strips it to readable text, and ingests it into the
+ * knowledge base like an uploaded file. Throws (before creating any row) when
+ * the page can't be fetched or has no readable text.
+ */
+export async function ingestUrlDocument(url: string): Promise<Document> {
+  const page = await fetchReadable(url, URL_MAX_CHARS);
+  if (page.error) {
+    throw new Error(page.error);
+  }
+  const text = page.text?.trim();
+  if (!text) {
+    throw new Error("No readable text found at that URL.");
+  }
+  return ingestTextDocument({
+    title: page.title?.trim() || url,
+    text,
+    source: "upload",
+    kind: "url",
+    filename: url,
+  });
+}
+
 export interface RetrievedChunk {
   documentId: string;
   documentTitle: string;
@@ -294,8 +333,10 @@ export async function retrieveRelevantChunks(
   if (!trimmed || queryEmbedding === null) {
     return [];
   }
-  const chunks = readyCorpus();
-  if (chunks.length === 0) {
+  const hasDocs =
+    db.select({ id: documents.id }).from(documents).where(eq(documents.status, "ready")).get() !==
+    undefined;
+  if (!hasDocs) {
     return [];
   }
 
@@ -308,7 +349,56 @@ export async function retrieveRelevantChunks(
     ({ embedding: resolved } = await embed({ model: embedder.model, value: trimmed }));
   }
 
-  return scoreChunks(chunks, resolved, limit);
+  // sqlite-vec KNN when the extension is available; in-process cosine otherwise.
+  const vecHits = searchChunkVectors(resolved, limit);
+  if (vecHits) {
+    return hydrateVecHits(vecHits);
+  }
+
+  return scoreChunks(readyCorpus(), resolved, limit);
+}
+
+/** Joins vec KNN hits back to chunk content + document titles, keeping score order. */
+function hydrateVecHits(hits: { id: string; score: number }[]): RetrievedChunk[] {
+  const passing = hits.filter((h) => h.score >= RETRIEVAL_FLOOR);
+  if (passing.length === 0) {
+    return [];
+  }
+  const rows = db
+    .select({
+      id: documentChunks.id,
+      documentId: documentChunks.documentId,
+      chunkIndex: documentChunks.chunkIndex,
+      content: documentChunks.content,
+      documentTitle: documents.title,
+      status: documents.status,
+    })
+    .from(documentChunks)
+    .innerJoin(documents, eq(documentChunks.documentId, documents.id))
+    .where(
+      inArray(
+        documentChunks.id,
+        passing.map((h) => h.id),
+      ),
+    )
+    .all();
+  const byId = new Map(rows.map((r) => [r.id, r]));
+
+  const out: RetrievedChunk[] = [];
+  for (const hit of passing) {
+    const row = byId.get(hit.id);
+    if (!row || row.status !== "ready") {
+      continue;
+    }
+    out.push({
+      documentId: row.documentId,
+      documentTitle: row.documentTitle,
+      chunkIndex: row.chunkIndex,
+      content: row.content,
+      score: hit.score,
+    });
+  }
+  return out;
 }
 
 function scoreChunks(

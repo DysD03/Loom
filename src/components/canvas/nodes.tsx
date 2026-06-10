@@ -10,12 +10,16 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import { toast } from "sonner";
-import { Loader2, Sparkles, X } from "lucide-react";
+import { GitBranch, Loader2, ShieldAlert, Sparkles, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { expandCanvasNodeAction } from "@/app/canvas/actions";
+import {
+  branchCanvasNodeAction,
+  critiqueCanvasNodeAction,
+  expandCanvasNodeAction,
+} from "@/app/canvas/actions";
 
 export interface CanvasNodeData extends Record<string, unknown> {
   text: string;
@@ -106,6 +110,8 @@ function EditableNode({
   const [expanding, setExpanding] = useState(false);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
+  const [branching, setBranching] = useState(false);
+  const [critiquing, setCritiquing] = useState(false);
   const [sel, setSel] = useState({ start: 0, end: 0 });
 
   const hasSelection = sel.end > sel.start;
@@ -149,20 +155,129 @@ function EditableNode({
     }
   }
 
+  /** Spawns child idea nodes fanned out to the right, each edged to this node. */
+  function addChildren(texts: string[], offsetY = 0) {
+    const self = getNode(id);
+    const base = self?.position ?? { x: 0, y: 0 };
+    const width = self?.measured?.width ?? 240;
+    const height = self?.measured?.height ?? 80;
+    texts.forEach((text, i) => {
+      const newId = crypto.randomUUID();
+      addNodes({
+        id: newId,
+        type: "idea",
+        position: {
+          x: base.x + width + 96,
+          y: base.y + height / 2 + offsetY + (i - (texts.length - 1) / 2) * 120,
+        },
+        data: { text },
+      });
+      addEdges({ id: crypto.randomUUID(), source: id, target: newId });
+    });
+  }
+
+  async function runBranch() {
+    const context = focusText();
+    if (!context) {
+      toast.error("Add some text to the node first.");
+      return;
+    }
+    setBranching(true);
+    try {
+      const result = await branchCanvasNodeAction(context);
+      if ("error" in result) {
+        toast.error("Branch failed", { description: result.error });
+        return;
+      }
+      addChildren(result.ideas);
+      toast.success(`Added ${result.ideas.length} child ideas`);
+    } catch {
+      toast.error("Branch failed", { description: "Check the model connection in Settings." });
+    } finally {
+      setBranching(false);
+    }
+  }
+
+  async function runCritique() {
+    const context = focusText();
+    if (!context) {
+      toast.error("Add some text to the node first.");
+      return;
+    }
+    setCritiquing(true);
+    try {
+      const result = await critiqueCanvasNodeAction(context);
+      if ("error" in result) {
+        toast.error("Critique failed", { description: result.error });
+        return;
+      }
+      const self = getNode(id);
+      const base = self?.position ?? { x: 0, y: 0 };
+      const height = self?.measured?.height ?? 80;
+      const newId = crypto.randomUUID();
+      addNodes({
+        id: newId,
+        type: "idea",
+        position: { x: base.x, y: base.y + height + 96 },
+        data: { text: result.text },
+      });
+      addEdges({ id: crypto.randomUUID(), source: id, target: newId });
+      toast.success("Added a critique node");
+    } catch {
+      toast.error("Critique failed", { description: "Check the model connection in Settings." });
+    } finally {
+      setCritiquing(false);
+    }
+  }
+
   const focus = focusText();
   const previewSource = focus.length > 70 ? `${focus.slice(0, 70)}…` : focus;
 
   return (
     <>
-      <NodeToolbar isVisible={selected || expanding} position={Position.Top} offset={8}>
-        <Button
-          size="xs"
-          variant="secondary"
-          onClick={() => setExpanding((e) => !e)}
-          className="shadow-sm"
-        >
-          <Sparkles className="size-3" /> Expand with AI
-        </Button>
+      <NodeToolbar
+        isVisible={selected || expanding || branching || critiquing}
+        position={Position.Top}
+        offset={8}
+      >
+        <div className="flex items-center gap-1">
+          <Button
+            size="xs"
+            variant="secondary"
+            onClick={() => setExpanding((e) => !e)}
+            className="shadow-sm"
+          >
+            <Sparkles className="size-3" /> Expand
+          </Button>
+          <Button
+            size="xs"
+            variant="secondary"
+            onClick={runBranch}
+            disabled={branching}
+            className="shadow-sm"
+          >
+            {branching ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <GitBranch className="size-3" />
+            )}
+            Branch
+          </Button>
+          <Button
+            size="xs"
+            variant="secondary"
+            onClick={runCritique}
+            disabled={critiquing}
+            className="shadow-sm"
+          >
+            {critiquing ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <ShieldAlert className="size-3" />
+            )}
+            Critique
+          </Button>
+        </div>
       </NodeToolbar>
 
       <NodeToolbar isVisible={expanding} position={Position.Bottom} offset={8}>

@@ -11,6 +11,8 @@ import { addMessage, getAgentConfig, getConversation } from "@/lib/conversations
 import { getPersona } from "@/lib/personas";
 import { embedText, formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
 import { formatChunksForPrompt, retrieveRelevantChunks } from "@/lib/documents";
+import { buildRetrievalInfo } from "@/lib/transparency";
+import { RETRIEVAL_PART_TYPE } from "@/lib/retrieval";
 import { buildToolRegistry, stepCountIs } from "@/lib/tools";
 import { checkToolSupport } from "@/lib/capabilities";
 import {
@@ -34,7 +36,10 @@ interface AgentBody {
 /** True when a UI message has any content worth persisting (text, tool calls, reasoning). */
 function hasPersistableContent(message: UIMessage): boolean {
   return message.parts.some(
-    (p) => p.type !== "step-start" && (p.type !== "text" || p.text.trim().length > 0),
+    (p) =>
+      p.type !== "step-start" &&
+      p.type !== RETRIEVAL_PART_TYPE &&
+      (p.type !== "text" || p.text.trim().length > 0),
   );
 }
 
@@ -89,8 +94,15 @@ export async function POST(request: Request) {
   const lastMessage = messages[messages.length - 1];
   if (lastMessage?.role === "user") {
     const text = textFromUIMessage(lastMessage);
-    if (text) {
-      addMessage({ conversationId, role: "user", content: text });
+    const hasFiles = lastMessage.parts.some((p) => p.type === "file");
+    if (text || hasFiles) {
+      addMessage({
+        conversationId,
+        role: "user",
+        content: text,
+        // Persist parts only when attachments exist so plain text stays lean.
+        parts: hasFiles ? lastMessage.parts : undefined,
+      });
     }
   }
 
@@ -114,21 +126,20 @@ export async function POST(request: Request) {
   // config.tools null => all tools; [] => explicitly none.
   const toolsPromise = buildToolRegistry(config.tools ?? undefined).catch(() => undefined);
   const queryEmbedding = queryText ? await embedText(queryText).catch(() => null) : null;
-  const [memoryBlock, docBlock] = await Promise.all([
-    retrieveRelevantMemories(queryText, undefined, queryEmbedding)
-      .then(formatMemoriesForPrompt)
-      .catch(() => ""),
-    retrieveRelevantChunks(queryText, undefined, queryEmbedding)
-      .then(formatChunksForPrompt)
-      .catch(() => ""),
+  const [memoriesUsed, chunksUsed] = await Promise.all([
+    retrieveRelevantMemories(queryText, undefined, queryEmbedding).catch(() => []),
+    retrieveRelevantChunks(queryText, undefined, queryEmbedding).catch(() => []),
   ]);
 
+  const memoryBlock = formatMemoriesForPrompt(memoriesUsed);
   if (memoryBlock) {
     baseSystem = `${baseSystem}\n\n${memoryBlock}`;
   }
+  const docBlock = formatChunksForPrompt(chunksUsed);
   if (docBlock) {
     baseSystem = `${baseSystem}\n\n${docBlock}`;
   }
+  const retrieval = buildRetrievalInfo(memoriesUsed, chunksUsed);
 
   // Only wire tools when the model can actually use them; otherwise degrade to
   // plain chat so a tool-incapable model doesn't error the whole stream.
@@ -144,22 +155,29 @@ export async function POST(request: Request) {
 
   // --- Plain agent run (no self-dialogue): stream straight through. ---
   if (!config.selfDialogue.enabled || !queryText) {
-    const result = streamText({
-      model,
-      system: baseSystem,
-      messages: modelMessages,
-      tools,
-      stopWhen: stepCountIs(maxSteps),
-    });
-
-    return result.toUIMessageStreamResponse({
+    const stream = createUIMessageStream<UIMessage>({
       originalMessages: messages,
       onFinish: ({ responseMessage }) => persistAssistant(conversationId, responseMessage),
       onError: (error) => {
         const detail = error instanceof Error ? error.message : String(error);
         return `The agent run failed: ${detail}. ${STREAM_FAIL}`;
       },
+      execute: ({ writer }) => {
+        if (retrieval) {
+          writer.write({ type: RETRIEVAL_PART_TYPE, data: retrieval });
+        }
+        const result = streamText({
+          model,
+          system: baseSystem,
+          messages: modelMessages,
+          tools,
+          stopWhen: stepCountIs(maxSteps),
+        });
+        writer.merge(result.toUIMessageStream({ sendStart: !retrieval }));
+      },
     });
+
+    return createUIMessageStreamResponse({ stream });
   }
 
   // --- Self-dialogue run: Solver↔Critic debate streamed as reasoning, then synthesize. ---
@@ -181,6 +199,9 @@ export async function POST(request: Request) {
       return `The agent run failed: ${detail}. ${STREAM_FAIL}`;
     },
     execute: async ({ writer }) => {
+      if (retrieval) {
+        writer.write({ type: RETRIEVAL_PART_TYPE, data: retrieval });
+      }
       let transcript = "";
 
       // Streams one debate turn into its own collapsible reasoning block and returns its text.

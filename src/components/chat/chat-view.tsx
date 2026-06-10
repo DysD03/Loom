@@ -3,11 +3,11 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
-import { isToolUIPart, type UIMessage } from "ai";
+import { isToolUIPart, type FileUIPart, type UIMessage } from "ai";
 
 import { getChatInstance } from "@/lib/chat-store";
 import { toast } from "sonner";
-import { ArrowUp, Brain, Square, TriangleAlert, Workflow } from "lucide-react";
+import { ArrowUp, Brain, ImagePlus, Square, TriangleAlert, Workflow, X } from "lucide-react";
 
 import type { ConversationType } from "@/db/schema";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,8 @@ import { sendToCanvasAction } from "@/app/canvas/actions";
 import { SendToOpencodeButton } from "@/components/opencode/send-button";
 import { ToolCallBlock } from "@/components/chat/tool-call-block";
 import { ReasoningBlock } from "@/components/chat/reasoning-block";
+import { RetrievalBlock } from "@/components/chat/retrieval-block";
+import { RETRIEVAL_PART_TYPE, type RetrievalInfo } from "@/lib/retrieval";
 
 function messageText(message: UIMessage): string {
   return message.parts
@@ -31,6 +33,30 @@ function messageText(message: UIMessage): string {
 
 function countSteps(message: UIMessage): number {
   return message.parts.filter((p) => p.type === "step-start").length;
+}
+
+function imageParts(message: UIMessage): FileUIPart[] {
+  return message.parts.filter(
+    (p): p is FileUIPart => p.type === "file" && p.mediaType.startsWith("image/"),
+  );
+}
+
+function MessageImages({ images }: { images: FileUIPart[] }) {
+  if (images.length === 0) return null;
+  return (
+    <div className="flex flex-wrap justify-end gap-2">
+      {images.map((img, i) => (
+        // Data-URL images can't go through next/image; this is intentional.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={i}
+          src={img.url}
+          alt={img.filename ?? "attached image"}
+          className="max-h-64 max-w-full rounded-xl border object-contain"
+        />
+      ))}
+    </div>
+  );
 }
 
 function StepDivider({ step, maxSteps }: { step: number; maxSteps?: number }) {
@@ -57,10 +83,13 @@ const MessageBubble = memo(function MessageBubble({
 
   if (isUser) {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground">
-          {text}
-        </div>
+      <div className="flex flex-col items-end gap-2">
+        <MessageImages images={imageParts(message)} />
+        {text ? (
+          <div className="max-w-[80%] rounded-2xl rounded-br-sm bg-primary px-4 py-2.5 text-sm whitespace-pre-wrap text-primary-foreground">
+            {text}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -80,6 +109,9 @@ const MessageBubble = memo(function MessageBubble({
               .slice(0, i + 1)
               .filter((p) => p.type === "step-start").length;
             return step > 1 ? <StepDivider key={i} step={step} maxSteps={maxSteps} /> : null;
+          }
+          if (part.type === RETRIEVAL_PART_TYPE) {
+            return <RetrievalBlock key={i} data={part.data as RetrievalInfo} />;
           }
           if (part.type === "reasoning") {
             return part.text.trim() ? (
@@ -139,9 +171,11 @@ export function ChatView({
   const searchParams = useSearchParams();
   // Prefill the composer when launched from a memory suggestion (?seed=…).
   const [input, setInput] = useState(() => searchParams.get("seed") ?? "");
+  const [attachments, setAttachments] = useState<FileUIPart[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // A persistent Chat instance keyed by conversation id keeps the stream alive
   // across tab switches (which unmount this view) — see lib/chat-store.ts. The
@@ -176,12 +210,45 @@ export function ChatView({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, status]);
 
+  function addImageFiles(files: File[]) {
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) {
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== "string") return;
+        setAttachments((prev) => [
+          ...prev,
+          { type: "file", mediaType: file.type, filename: file.name, url: reader.result as string },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const images = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => f !== null);
+    if (images.length > 0) {
+      event.preventDefault();
+      addImageFiles(images);
+    }
+  }
+
   function submit() {
     const text = input.trim();
-    if (!text || isStreaming) {
+    if ((!text && attachments.length === 0) || isStreaming) {
       return;
     }
-    sendMessage({ text });
+    if (text) {
+      sendMessage({ text, files: attachments.length ? attachments : undefined });
+    } else {
+      sendMessage({ files: attachments });
+    }
+    setAttachments([]);
     setInput("");
     // The sidebar title + ordering derive from the persisted user message, which
     // the route writes before streaming. Refresh shortly after sending so the
@@ -303,24 +370,76 @@ export function ChatView({
       </div>
 
       <div className="shrink-0 border-t px-6 py-4">
-        <div className="mx-auto flex max-w-3xl items-end gap-2">
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            rows={1}
-            className="max-h-48 min-h-[44px] resize-none"
-          />
-          {isStreaming ? (
-            <Button size="icon" variant="secondary" onClick={() => stop()} aria-label="Stop">
-              <Square className="size-4" />
+        <div className="mx-auto max-w-3xl space-y-2">
+          {attachments.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {attachments.map((att, i) => (
+                <div key={i} className="group relative">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={att.url}
+                    alt={att.filename ?? "attachment"}
+                    className="h-16 w-16 rounded-lg border object-cover"
+                  />
+                  <button
+                    type="button"
+                    aria-label="Remove attachment"
+                    onClick={() =>
+                      setAttachments((prev) => prev.filter((_, idx) => idx !== i))
+                    }
+                    className="bg-background/90 absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="flex items-end gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                addImageFiles(Array.from(e.target.files ?? []));
+                e.target.value = "";
+              }}
+            />
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="Attach image"
+              disabled={isStreaming}
+            >
+              <ImagePlus className="size-4" />
             </Button>
-          ) : (
-            <Button size="icon" onClick={submit} disabled={!input.trim()} aria-label="Send">
-              <ArrowUp className="size-4" />
-            </Button>
-          )}
+            <Textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={placeholder}
+              rows={1}
+              className="max-h-48 min-h-[44px] resize-none"
+            />
+            {isStreaming ? (
+              <Button size="icon" variant="secondary" onClick={() => stop()} aria-label="Stop">
+                <Square className="size-4" />
+              </Button>
+            ) : (
+              <Button
+                size="icon"
+                onClick={submit}
+                disabled={!input.trim() && attachments.length === 0}
+                aria-label="Send"
+              >
+                <ArrowUp className="size-4" />
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </div>

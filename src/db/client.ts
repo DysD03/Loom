@@ -10,7 +10,7 @@ import * as schema from "./schema";
 const DB_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DB_DIR, "loom.db");
 
-function createDb() {
+function createSqlite() {
   if (!fs.existsSync(DB_DIR)) {
     fs.mkdirSync(DB_DIR, { recursive: true });
   }
@@ -21,15 +21,22 @@ function createDb() {
   // latency on every persisted message.
   sqlite.pragma("synchronous = NORMAL");
   sqlite.pragma("foreign_keys = ON");
-  return drizzle(sqlite, { schema });
+  return sqlite;
 }
 
-type DbClient = ReturnType<typeof createDb>;
+type Sqlite = ReturnType<typeof createSqlite>;
+type DbClient = ReturnType<typeof drizzle<typeof schema>>;
 
-const globalForDb = globalThis as unknown as { __loomDb?: DbClient };
+const globalForDb = globalThis as unknown as {
+  __loomSqlite?: Sqlite;
+  __loomDb?: DbClient;
+};
 
-export const db: DbClient = globalForDb.__loomDb ?? createDb();
+/** Raw better-sqlite3 handle — needed for extensions (sqlite-vec) and raw SQL. */
+export const rawDb: Sqlite = globalForDb.__loomSqlite ?? createSqlite();
+export const db: DbClient = globalForDb.__loomDb ?? drizzle(rawDb, { schema });
 
 if (process.env.NODE_ENV !== "production") {
+  globalForDb.__loomSqlite = rawDb;
   globalForDb.__loomDb = db;
 }

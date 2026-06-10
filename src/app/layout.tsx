@@ -4,6 +4,7 @@ import localFont from "next/font/local";
 import "./globals.css";
 
 import { Nav } from "@/components/nav";
+import { SearchPalette } from "@/components/search";
 import { Toaster } from "@/components/ui/sonner";
 
 // Self-hosted JetBrainsMono Nerd Font (includes icon glyphs) — primary UI font.
@@ -50,6 +51,7 @@ export default function RootLayout({
       <body className="flex h-screen overflow-hidden">
         <Nav />
         <main className="flex flex-1 flex-col overflow-hidden">{children}</main>
+        <SearchPalette />
         <Toaster richColors position="top-right" />
       </body>
     </html>

@@ -8,6 +8,7 @@ import {
   Telescope,
   Workflow,
   Brain,
+  Search,
   Settings,
   SquareTerminal,
   Library,
@@ -84,6 +85,17 @@ export function Nav() {
         <span className="bg-neon-cyan animate-blink inline-block h-3.5 w-2 shadow-[0_0_8px_var(--neon-cyan)]" />
       </div>
       <div className="border-sidebar-border/60 mx-3 mb-2 border-b" />
+      <button
+        type="button"
+        onClick={() => window.dispatchEvent(new Event("loom:search"))}
+        className="text-muted-foreground hover:text-sidebar-accent-foreground hover:bg-sidebar-accent/50 mx-2 mb-1 flex items-center gap-3 px-3 py-2 text-[0.82rem] font-medium tracking-wide uppercase"
+      >
+        <Search className="size-4" />
+        <span className="flex-1 text-left">Search</span>
+        <kbd className="rounded border px-1 py-0.5 text-[9px] tracking-normal normal-case">
+          Ctrl K
+        </kbd>
+      </button>
       <div className="flex flex-1 flex-col gap-1 px-2 py-1">
         {primaryItems.map((item, index) => (
           <NavLink
