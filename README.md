@@ -9,6 +9,17 @@
 
 A personal, **local-first** web UI for your own local LLM. Everything runs on your machine — no cloud services, no telemetry, no accounts.
 
+## ⚡ Performance
+
+A dedicated performance pass keeps Loom feeling instant, even with a large knowledge base and several MCP servers:
+
+- **Faster time-to-first-token** — each chat/agent message embeds the query **once** (shared by memory + document retrieval), runs both retrievals **in parallel**, and builds the tool registry (and the agent's tool-capability probe) concurrently — instead of five sequential round trips before streaming starts.
+- **Cached vector corpus** — document-chunk and memory embeddings are parsed once into `Float32Array`s and cached per document/memory, instead of re-`JSON.parse`-ing the entire knowledge base on every message.
+- **Cheap MCP resolution** — `mcp.json` is only re-synced when the file actually changes (mtime check), servers connect in parallel, and an unreachable server backs off for 30s instead of adding a spawn-and-fail delay to every message.
+- **Leaner client bundle** — the code syntax highlighter lazy-loads as a separate chunk (`PrismAsync`), keeping multiple MB of Prism grammars out of the main chat bundle.
+- **Smoother streaming** — message bubbles are memoized so each streamed token re-renders only the live message (not the whole conversation), and the context meter estimates tokens incrementally instead of rescanning every message per token.
+- **Faster writes** — SQLite runs in WAL mode with `synchronous=NORMAL`, so persisting a message never pays a per-commit disk fsync.
+
 ## Introduction
 
 **Loom** is a single, self-hosted workspace that wraps your local model (via LM Studio, Ollama, or any OpenAI-compatible server) in everything you'd actually want around it: streaming chat, a tool-using agent loop, deep research with cited reports, a visual idea canvas, a real coding agent, a personal knowledge base your model can read, and a memory that learns durable facts about you. It's built for people who want the convenience of a polished AI workspace without sending a single token to the cloud.

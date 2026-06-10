@@ -8,6 +8,7 @@ import { db } from "@/db/client";
 import { memories, type Memory, type MemoryType, MEMORY_TYPES } from "@/db/schema";
 import { getChatModel, getEmbeddingModel } from "./provider";
 import { getMessages } from "./conversations";
+import { cosineSimilarity, parseVector } from "./vectors";
 
 const DEDUPE_THRESHOLD = 0.9;
 const RETRIEVAL_FLOOR = 0.3;
@@ -40,34 +41,24 @@ async function embedTexts(texts: string[]): Promise<(number[] | null)[]> {
   return embeddings;
 }
 
-function parseEmbedding(value: string | null): number[] | null {
-  if (!value) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as number[]) : null;
-  } catch {
-    return null;
-  }
-}
+// Embeddings are stored as JSON text; parsing them is the hot cost of retrieval,
+// so parsed vectors are cached per row. `updatedAt` is in the key because a
+// memory's content (and thus embedding) can be edited in place.
+const vectorCache = new Map<string, Float32Array | null>();
+const VECTOR_CACHE_MAX = 8_192;
 
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) {
-    return 0;
+function memoryVector(m: Memory): Float32Array | null {
+  const key = `${m.id}|${m.updatedAt}`;
+  const hit = vectorCache.get(key);
+  if (hit !== undefined) {
+    return hit;
   }
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
+  if (vectorCache.size >= VECTOR_CACHE_MAX) {
+    vectorCache.clear();
   }
-  if (normA === 0 || normB === 0) {
-    return 0;
-  }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+  const vec = parseVector(m.embedding);
+  vectorCache.set(key, vec);
+  return vec;
 }
 
 function isTextDuplicate(content: string, existing: Memory[]): boolean {
@@ -219,10 +210,10 @@ export async function extractMemoriesFromConversation(
 
     let duplicate = isTextDuplicate(candidate.content, existing);
     if (!duplicate && embedding) {
-      const pool = existing
-        .map((m) => parseEmbedding(m.embedding))
-        .filter((e): e is number[] => e !== null)
-        .concat(acceptedEmbeddings);
+      const pool: ArrayLike<number>[] = [
+        ...existing.map((m) => memoryVector(m)).filter((e): e is Float32Array => e !== null),
+        ...acceptedEmbeddings,
+      ];
       duplicate = pool.some((e) => cosineSimilarity(embedding, e) >= DEDUPE_THRESHOLD);
     }
 
@@ -250,10 +241,13 @@ export async function extractMemoriesFromConversation(
 /**
  * Retrieves memories to inject into a session's system prompt: pinned memories
  * always, plus the top semantic matches for the query when embeddings are available.
+ * Pass `queryEmbedding` when the caller already embedded the query (e.g. to share
+ * one embedding call across memory + document retrieval); `undefined` embeds here.
  */
 export async function retrieveRelevantMemories(
   query: string,
   limit = 6,
+  queryEmbedding?: number[] | null,
 ): Promise<Memory[]> {
   const all = listMemories();
   if (all.length === 0) {
@@ -261,9 +255,14 @@ export async function retrieveRelevantMemories(
   }
 
   const pinned = all.filter((m) => m.pinned);
-  const queryEmbedding = query.trim() ? await embedText(query) : null;
+  const resolvedEmbedding =
+    queryEmbedding !== undefined
+      ? queryEmbedding
+      : query.trim()
+        ? await embedText(query)
+        : null;
 
-  if (!queryEmbedding) {
+  if (!resolvedEmbedding) {
     return all.slice(0, limit);
   }
 
@@ -271,8 +270,8 @@ export async function retrieveRelevantMemories(
   const scored = all
     .filter((m) => !pinnedIds.has(m.id))
     .map((m) => {
-      const embedding = parseEmbedding(m.embedding);
-      return { memory: m, score: embedding ? cosineSimilarity(queryEmbedding, embedding) : 0 };
+      const embedding = memoryVector(m);
+      return { memory: m, score: embedding ? cosineSimilarity(resolvedEmbedding, embedding) : 0 };
     })
     .filter((entry) => entry.score >= RETRIEVAL_FLOOR)
     .sort((a, b) => b.score - a.score)

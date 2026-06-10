@@ -9,7 +9,7 @@ import {
 import { getChatModel, textFromUIMessage } from "@/lib/provider";
 import { addMessage, getAgentConfig, getConversation } from "@/lib/conversations";
 import { getPersona } from "@/lib/personas";
-import { formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
+import { embedText, formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
 import { formatChunksForPrompt, retrieveRelevantChunks } from "@/lib/documents";
 import { buildToolRegistry, stepCountIs } from "@/lib/tools";
 import { checkToolSupport } from "@/lib/capabilities";
@@ -107,39 +107,37 @@ export async function POST(request: Request) {
     ? `${persona.systemPrompt.trim()}\n\n${AGENT_SYSTEM_PROMPT}`
     : AGENT_SYSTEM_PROMPT;
 
-  try {
-    const relevant = await retrieveRelevantMemories(queryText);
-    const memoryBlock = formatMemoriesForPrompt(relevant);
-    if (memoryBlock) {
-      baseSystem = `${baseSystem}\n\n${memoryBlock}`;
-    }
-  } catch {
-    // Memory retrieval is best-effort; never block the agent on it.
-  }
+  // Everything before streaming is best-effort and latency-critical: probe tool
+  // support and build the registry while the query is embedded once (shared by
+  // memory + document retrieval), then run both retrievals concurrently.
+  const supportPromise = checkToolSupport(conversation.model).catch(() => null);
+  // config.tools null => all tools; [] => explicitly none.
+  const toolsPromise = buildToolRegistry(config.tools ?? undefined).catch(() => undefined);
+  const queryEmbedding = queryText ? await embedText(queryText).catch(() => null) : null;
+  const [memoryBlock, docBlock] = await Promise.all([
+    retrieveRelevantMemories(queryText, undefined, queryEmbedding)
+      .then(formatMemoriesForPrompt)
+      .catch(() => ""),
+    retrieveRelevantChunks(queryText, undefined, queryEmbedding)
+      .then(formatChunksForPrompt)
+      .catch(() => ""),
+  ]);
 
-  try {
-    const chunks = await retrieveRelevantChunks(queryText);
-    const docBlock = formatChunksForPrompt(chunks);
-    if (docBlock) {
-      baseSystem = `${baseSystem}\n\n${docBlock}`;
-    }
-  } catch {
-    // Document retrieval is best-effort; never block the agent on it.
+  if (memoryBlock) {
+    baseSystem = `${baseSystem}\n\n${memoryBlock}`;
+  }
+  if (docBlock) {
+    baseSystem = `${baseSystem}\n\n${docBlock}`;
   }
 
   // Only wire tools when the model can actually use them; otherwise degrade to
   // plain chat so a tool-incapable model doesn't error the whole stream.
   let tools: Awaited<ReturnType<typeof buildToolRegistry>> | undefined;
-  try {
-    const support = await checkToolSupport(conversation.model);
-    if (support.supported) {
-      // config.tools null => all tools; [] => explicitly none.
-      tools = await buildToolRegistry(config.tools ?? undefined);
-    } else {
-      baseSystem = `${baseSystem}\n\nNote: tool calling is unavailable for the current model, so answer directly without tools.`;
-    }
-  } catch {
-    // Tools are best-effort; don't block the agent if the registry fails.
+  const support = await supportPromise;
+  if (!support || support.supported) {
+    tools = await toolsPromise;
+  } else {
+    baseSystem = `${baseSystem}\n\nNote: tool calling is unavailable for the current model, so answer directly without tools.`;
   }
 
   const modelMessages = await convertToModelMessages(messages);

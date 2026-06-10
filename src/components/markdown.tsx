@@ -3,7 +3,9 @@
 import { memo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+// The async build lazy-loads the Prism core + language grammars in a separate
+// chunk on first use, keeping the multi-MB highlighter out of the main bundle.
+import { PrismAsync as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 import { CopyButton } from "@/components/copy-button";

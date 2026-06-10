@@ -9,7 +9,9 @@ import { db } from "@/db/client";
 import { mcpServers, type McpServer } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
-import { readMcpConfig } from "@/lib/mcp-config";
+import { statSync } from "node:fs";
+
+import { mcpConfigPath, readMcpConfig } from "@/lib/mcp-config";
 
 export type { McpToolDef };
 
@@ -31,11 +33,17 @@ interface Connection {
   tools: McpToolDef[];
   status: "connected" | "error";
   error?: string;
+  /** When the last connect attempt failed — gates retry backoff. */
+  failedAt?: number;
 }
+
+/** How long a failed server is left alone before chat/agent requests retry it. */
+const ERROR_RETRY_MS = 30_000;
 
 // Global singleton so connections survive hot-reload in dev
 const g = globalThis as typeof globalThis & {
   __mcpConnections?: Map<string, Connection>;
+  __mcpSyncState?: { stamp: number; result: { error?: string } };
 };
 if (!g.__mcpConnections) {
   g.__mcpConnections = new Map();
@@ -45,6 +53,14 @@ const connections = g.__mcpConnections;
 export async function connectServer(server: McpServer): Promise<Connection> {
   const existing = connections.get(server.id);
   if (existing?.status === "connected") return existing;
+  // Back off a recently failed server so a down server (e.g. a dead stdio
+  // command) doesn't add a spawn-and-fail delay to every chat message.
+  if (
+    existing?.status === "error" &&
+    Date.now() - (existing.failedAt ?? 0) < ERROR_RETRY_MS
+  ) {
+    return existing;
+  }
 
   const client = new Client({ name: "loom", version: "1.0.0" });
 
@@ -77,6 +93,7 @@ export async function connectServer(server: McpServer): Promise<Connection> {
       tools: [],
       status: "error",
       error: err instanceof Error ? err.message : String(err),
+      failedAt: Date.now(),
     };
     connections.set(server.id, conn);
     return conn;
@@ -115,6 +132,25 @@ export async function pingServer(
  * so repeated syncs are cheap. Returns a file-level parse error, if any.
  */
 export function syncMcpServersFromFile(): { error?: string } {
+  // Reconciling is cheap but not free (file read + table upserts), and it runs
+  // on every chat/agent request via tool resolution — skip it entirely while
+  // the file's mtime is unchanged (-1 = file absent).
+  let stamp = -1;
+  try {
+    stamp = statSync(mcpConfigPath()).mtimeMs;
+  } catch {
+    // Missing file: sync once (to drop stale file-managed rows), then skip.
+  }
+  if (g.__mcpSyncState && g.__mcpSyncState.stamp === stamp) {
+    return g.__mcpSyncState.result;
+  }
+
+  const result = reconcileMcpServers();
+  g.__mcpSyncState = { stamp, result };
+  return result;
+}
+
+function reconcileMcpServers(): { error?: string } {
   const { entries, error } = readMcpConfig();
   if (error) return { error };
 
@@ -180,12 +216,13 @@ export async function getAllMcpTools(): Promise<McpToolWithServer[]> {
     .where(eq(mcpServers.enabled, true))
     .all();
 
+  // Connect in parallel so one slow/cold server doesn't delay the others.
+  const conns = await Promise.all(servers.map((server) => connectServer(server)));
+
   const result: McpToolWithServer[] = [];
-  for (const server of servers) {
-    let conn = connections.get(server.id);
-    if (!conn || conn.status === "error") {
-      conn = await connectServer(server);
-    }
+  for (let i = 0; i < servers.length; i++) {
+    const server = servers[i];
+    const conn = conns[i];
     if (conn.status === "connected") {
       for (const tool of conn.tools) {
         result.push({ ...tool, serverId: server.id, serverName: server.name });

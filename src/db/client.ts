@@ -16,6 +16,10 @@ function createDb() {
   }
   const sqlite = new Database(DB_PATH);
   sqlite.pragma("journal_mode = WAL");
+  // With WAL, NORMAL only skips the per-commit fsync (durability moves to
+  // checkpoints) — it cannot corrupt the DB, and writes stop paying disk sync
+  // latency on every persisted message.
+  sqlite.pragma("synchronous = NORMAL");
   sqlite.pragma("foreign_keys = ON");
   return drizzle(sqlite, { schema });
 }

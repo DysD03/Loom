@@ -2,17 +2,13 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import { embed, embedMany } from "ai";
-import { desc, eq, inArray } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 
 import { db } from "@/db/client";
-import {
-  documentChunks,
-  documents,
-  type Document,
-  type DocumentChunk,
-} from "@/db/schema";
+import { documentChunks, documents, type Document } from "@/db/schema";
 import { getEmbeddingModel } from "./provider";
 import { detectKind, extractText } from "./extract";
+import { cosineSimilarity, parseVector } from "./vectors";
 
 const CHUNK_SIZE = 1_000;
 const CHUNK_OVERLAP = 150;
@@ -221,36 +217,6 @@ export async function ingestTextDocument(input: {
   }
 }
 
-function parseEmbedding(value: string | null): number[] | null {
-  if (!value) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as number[]) : null;
-  } catch {
-    return null;
-  }
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) {
-    return 0;
-  }
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  if (normA === 0 || normB === 0) {
-    return 0;
-  }
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
 export interface RetrievedChunk {
   documentId: string;
   documentTitle: string;
@@ -259,61 +225,105 @@ export interface RetrievedChunk {
   score: number;
 }
 
-function readyChunks(): (DocumentChunk & { docTitle: string })[] {
+interface CorpusChunk {
+  documentId: string;
+  documentTitle: string;
+  chunkIndex: number;
+  content: string;
+  vector: Float32Array | null;
+}
+
+// Chunk rows are immutable once a document is "ready", so the parsed corpus is
+// cached per document (keyed on `updatedAt` to catch renames/re-ingests). This
+// avoids re-reading and re-JSON.parsing every embedding on every chat message.
+const corpusCache = new Map<string, { stamp: string; chunks: CorpusChunk[] }>();
+
+function readyCorpus(): CorpusChunk[] {
   const readyDocs = db
-    .select()
+    .select({ id: documents.id, title: documents.title, updatedAt: documents.updatedAt })
     .from(documents)
     .where(eq(documents.status, "ready"))
     .all();
-  if (readyDocs.length === 0) {
-    return [];
+
+  // Drop cache entries for documents that no longer exist (or aren't ready).
+  const liveIds = new Set(readyDocs.map((d) => d.id));
+  for (const id of corpusCache.keys()) {
+    if (!liveIds.has(id)) {
+      corpusCache.delete(id);
+    }
   }
-  const titleById = new Map(readyDocs.map((d) => [d.id, d.title]));
-  const rows = db
-    .select()
-    .from(documentChunks)
-    .where(inArray(documentChunks.documentId, [...titleById.keys()]))
-    .all();
-  return rows.map((r) => ({ ...r, docTitle: titleById.get(r.documentId) ?? "" }));
+
+  const out: CorpusChunk[] = [];
+  for (const doc of readyDocs) {
+    let entry = corpusCache.get(doc.id);
+    if (!entry || entry.stamp !== doc.updatedAt) {
+      const rows = db
+        .select()
+        .from(documentChunks)
+        .where(eq(documentChunks.documentId, doc.id))
+        .all();
+      entry = {
+        stamp: doc.updatedAt,
+        chunks: rows.map((r) => ({
+          documentId: doc.id,
+          documentTitle: doc.title,
+          chunkIndex: r.chunkIndex,
+          content: r.content,
+          vector: parseVector(r.embedding),
+        })),
+      };
+      corpusCache.set(doc.id, entry);
+    }
+    out.push(...entry.chunks);
+  }
+  return out;
 }
 
 /**
  * Retrieves the most relevant document chunks for a query via cosine similarity.
  * Returns [] when there are no documents, no query, or no embeddings model.
+ * Pass `queryEmbedding` when the caller already embedded the query (e.g. to share
+ * one embedding call across memory + document retrieval); `undefined` embeds here.
  */
 export async function retrieveRelevantChunks(
   query: string,
   limit = RETRIEVAL_LIMIT,
+  queryEmbedding?: number[] | null,
 ): Promise<RetrievedChunk[]> {
   const trimmed = query.trim();
-  if (!trimmed) {
+  if (!trimmed || queryEmbedding === null) {
     return [];
   }
-  const embedder = getEmbeddingModel();
-  if (!embedder) {
-    return [];
-  }
-  const chunks = readyChunks();
+  const chunks = readyCorpus();
   if (chunks.length === 0) {
     return [];
   }
 
-  const { embedding: queryEmbedding } = await embed({
-    model: embedder.model,
-    value: trimmed,
-  });
+  let resolved = queryEmbedding;
+  if (resolved === undefined) {
+    const embedder = getEmbeddingModel();
+    if (!embedder) {
+      return [];
+    }
+    ({ embedding: resolved } = await embed({ model: embedder.model, value: trimmed }));
+  }
 
+  return scoreChunks(chunks, resolved, limit);
+}
+
+function scoreChunks(
+  chunks: CorpusChunk[],
+  queryEmbedding: number[],
+  limit: number,
+): RetrievedChunk[] {
   return chunks
-    .map((c) => {
-      const embedding = parseEmbedding(c.embedding);
-      return {
-        documentId: c.documentId,
-        documentTitle: c.docTitle,
-        chunkIndex: c.chunkIndex,
-        content: c.content,
-        score: embedding ? cosineSimilarity(queryEmbedding, embedding) : 0,
-      };
-    })
+    .map((c) => ({
+      documentId: c.documentId,
+      documentTitle: c.documentTitle,
+      chunkIndex: c.chunkIndex,
+      content: c.content,
+      score: c.vector ? cosineSimilarity(queryEmbedding, c.vector) : 0,
+    }))
     .filter((c) => c.score >= RETRIEVAL_FLOOR)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);

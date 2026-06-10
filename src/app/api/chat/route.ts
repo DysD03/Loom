@@ -2,7 +2,7 @@ import { convertToModelMessages, streamText, type UIMessage } from "ai";
 
 import { getChatModel, textFromUIMessage } from "@/lib/provider";
 import { addMessage, getConversation } from "@/lib/conversations";
-import { formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
+import { embedText, formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
 import { formatChunksForPrompt, retrieveRelevantChunks } from "@/lib/documents";
 import { buildToolRegistry, stepCountIs } from "@/lib/tools";
 
@@ -56,33 +56,30 @@ export async function POST(request: Request) {
   }
 
   const queryText = lastMessage?.role === "user" ? textFromUIMessage(lastMessage) : "";
+
+  // Everything before streaming is best-effort and latency-critical: build the
+  // tool registry while the query is embedded once (shared by memory + document
+  // retrieval), then run both retrievals concurrently.
+  const toolsPromise = buildToolRegistry().catch(() => undefined);
+  const queryEmbedding = queryText ? await embedText(queryText).catch(() => null) : null;
+  const [memoryBlock, docBlock] = await Promise.all([
+    retrieveRelevantMemories(queryText, undefined, queryEmbedding)
+      .then(formatMemoriesForPrompt)
+      .catch(() => ""),
+    retrieveRelevantChunks(queryText, undefined, queryEmbedding)
+      .then(formatChunksForPrompt)
+      .catch(() => ""),
+  ]);
+
   let system = SYSTEM_PROMPT;
-  try {
-    const relevant = await retrieveRelevantMemories(queryText);
-    const memoryBlock = formatMemoriesForPrompt(relevant);
-    if (memoryBlock) {
-      system = `${SYSTEM_PROMPT}\n\n${memoryBlock}`;
-    }
-  } catch {
-    // Memory retrieval is best-effort; never block chat on it.
+  if (memoryBlock) {
+    system = `${system}\n\n${memoryBlock}`;
+  }
+  if (docBlock) {
+    system = `${system}\n\n${docBlock}`;
   }
 
-  try {
-    const chunks = await retrieveRelevantChunks(queryText);
-    const docBlock = formatChunksForPrompt(chunks);
-    if (docBlock) {
-      system = `${system}\n\n${docBlock}`;
-    }
-  } catch {
-    // Document retrieval is best-effort; never block chat on it.
-  }
-
-  let tools: Awaited<ReturnType<typeof buildToolRegistry>> | undefined;
-  try {
-    tools = await buildToolRegistry();
-  } catch {
-    // Tools are best-effort; don't block chat if registry fails
-  }
+  const tools = await toolsPromise;
 
   const result = streamText({
     model,

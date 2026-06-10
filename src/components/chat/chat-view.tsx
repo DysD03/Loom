@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, type UIMessage } from "ai";
@@ -43,7 +43,15 @@ function StepDivider({ step, maxSteps }: { step: number; maxSteps?: number }) {
   );
 }
 
-function MessageBubble({ message, maxSteps }: { message: UIMessage; maxSteps?: number }) {
+// Memoized: useChat keeps stable references for untouched messages, so a
+// streaming delta re-renders only the message it lands in, not the whole list.
+const MessageBubble = memo(function MessageBubble({
+  message,
+  maxSteps,
+}: {
+  message: UIMessage;
+  maxSteps?: number;
+}) {
   const isUser = message.role === "user";
   const text = messageText(message);
 
@@ -94,7 +102,7 @@ function MessageBubble({ message, maxSteps }: { message: UIMessage; maxSteps?: n
       </div>
     </div>
   );
-}
+});
 
 interface ChatViewProps {
   conversationId: string;
