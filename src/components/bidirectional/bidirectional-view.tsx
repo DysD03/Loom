@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { UIMessage } from "ai";
 import { toast } from "sonner";
@@ -8,14 +8,19 @@ import {
   ArrowRight,
   CheckCircle2,
   CircleDot,
+  CircleStop,
   Flag,
+  Flame,
   GitMerge,
+  Lightbulb,
   Loader2,
   NotebookPen,
   Play,
   Rocket,
+  Search,
   TriangleAlert,
   Workflow,
+  type LucideIcon,
 } from "lucide-react";
 
 import type { GoalStatus } from "@/db/schema";
@@ -47,6 +52,52 @@ const STATUS_LABEL: Record<GoalStatus, string> = {
   stalled: "Stopped — no bridge within budget",
   error: "Error",
 };
+
+/** True while a run is still processing (not yet done / stalled / errored). */
+function isNonTerminal(status: GoalStatus | null): boolean {
+  return status === "planning" || status === "expanding" || status === "reconciling";
+}
+
+type ToolStatus = "running" | "done" | "error";
+interface ToolInfo {
+  detail: string;
+  status: ToolStatus;
+}
+
+/** A small header window for a grounding tool; hover shows its last use. */
+function ToolWindow({
+  label,
+  verb,
+  icon: Icon,
+  info,
+}: {
+  label: string;
+  verb: string;
+  icon: LucideIcon;
+  info: ToolInfo | null;
+}) {
+  if (!info) return null;
+  const running = info.status === "running";
+  const error = info.status === "error";
+  const cls = error
+    ? "border-destructive/40 text-destructive bg-destructive/5"
+    : running
+      ? "border-neon-cyan/40 text-neon-cyan bg-neon-cyan/5"
+      : "border-border/60 text-muted-foreground";
+  const title = error
+    ? `${label} failed — ${info.detail || "—"}`
+    : `${label} last ${verb}: ${info.detail || "—"}`;
+  return (
+    <div
+      className={`flex items-center gap-1 rounded-md border px-2 py-1 font-mono text-[11px] leading-none ${cls}`}
+      title={title}
+      aria-label={title}
+    >
+      {running ? <Loader2 className="size-3 animate-spin" /> : <Icon className="size-3" />}
+      <span>{label}</span>
+    </div>
+  );
+}
 
 function NodeCard({
   node,
@@ -194,17 +245,83 @@ export function BidirectionalView({
     initialRun?.reconcile ?? null,
   );
   const [bridge, setBridge] = useState<BridgeResult | null>(initialRun?.bridge ?? null);
+  const [recommendations, setRecommendations] = useState<string[]>(
+    initialRun?.recommendations ?? [],
+  );
   const [round, setRound] = useState<{ index: number; max: number } | null>(null);
   const [error, setError] = useState<string | null>(initialRun?.error ?? null);
   const [isExporting, setIsExporting] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [toolState, setToolState] = useState<{
+    searxng: ToolInfo | null;
+    firecrawl: ToolInfo | null;
+  }>({ searxng: null, firecrawl: null });
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Aborts the in-flight run stream when the user cancels.
+  const abortRef = useRef<AbortController | null>(null);
   // Set when a bridge arrives mid-stream, so we can auto-open the canvas once the
   // run finishes (without auto-firing on an already-loaded past run).
   const freshBridgeRef = useRef(false);
+  const runningRef = useRef(false);
+  // The status the page loaded with — used once to decide whether to start polling.
+  const initialStatusRef = useRef<GoalStatus | null>(initialRun?.status ?? null);
 
   const bestForward = reconcile?.bestPair?.forwardId ?? bridge?.forwardId ?? null;
   const bestBackward = reconcile?.bestPair?.backwardId ?? bridge?.backwardId ?? null;
+
+  useEffect(() => {
+    runningRef.current = running;
+  }, [running]);
+
+  // Applies a persisted run snapshot to the live view (used by reload polling).
+  const applyRun = useCallback((run: LoadedRun) => {
+    setForward(run.forward);
+    setBackward(run.backward);
+    setReconcile(run.reconcile);
+    setBridge(run.bridge);
+    setRecommendations(run.recommendations);
+    setStatus(run.status);
+    setError(run.error);
+  }, []);
+
+  // A run keeps going server-side even if the page is reloaded mid-flight. If we
+  // loaded while one was still processing, poll the persisted run until it ends
+  // so the view catches up to the work the model is still doing in the background.
+  useEffect(() => {
+    if (!isNonTerminal(initialStatusRef.current)) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+
+    async function poll() {
+      if (cancelled) return;
+      attempts += 1;
+      if (!runningRef.current) {
+        try {
+          const res = await fetch(
+            `/api/bidirectional?conversationId=${encodeURIComponent(conversationId)}`,
+          );
+          if (res.ok) {
+            const data = (await res.json()) as { run: LoadedRun | null };
+            if (!cancelled && data.run) {
+              applyRun(data.run);
+              if (!isNonTerminal(data.run.status)) return; // finished — stop polling
+            }
+          }
+        } catch {
+          // transient — keep polling
+        }
+      }
+      if (!cancelled && attempts < 400) timer = setTimeout(poll, 2500);
+    }
+
+    timer = setTimeout(poll, 2500);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [conversationId, applyRun]);
 
   // A synthetic transcript so the context meter reflects this run's pressure on
   // the model's context window (framing + both frontiers + the stitched bridge).
@@ -292,6 +409,15 @@ export function BidirectionalView({
         setBridge(event.bridge);
         freshBridgeRef.current = true;
         break;
+      case "recommendations":
+        setRecommendations(event.items);
+        break;
+      case "tool":
+        setToolState((prev) => ({
+          ...prev,
+          [event.tool]: { detail: event.detail, status: event.status },
+        }));
+        break;
       case "error":
         setError(event.message);
         setStatus("error");
@@ -311,14 +437,20 @@ export function BidirectionalView({
     setBackward([]);
     setReconcile(null);
     setBridge(null);
+    setRecommendations([]);
     setRound(null);
+    setToolState({ searxng: null, firecrawl: null });
     setStatus("planning");
     freshBridgeRef.current = false;
+
+    const ac = new AbortController();
+    abortRef.current = ac;
 
     try {
       const res = await fetch("/api/bidirectional", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: ac.signal,
         body: JSON.stringify({
           conversationId,
           problemSpec: problemSpec.trim(),
@@ -351,36 +483,89 @@ export function BidirectionalView({
         }
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setStatus("error");
+      // A user cancel aborts the fetch — that's a graceful stop, not an error.
+      if (ac.signal.aborted) {
+        setStatus("stalled");
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+        setStatus("error");
+      }
     } finally {
+      abortRef.current = null;
       setRunning(false);
+      setCancelling(false);
       setRound(null);
       router.refresh();
     }
 
-    // Bridging is done — automatically build + open the solution canvas.
-    if (freshBridgeRef.current) {
+    // Bridging is done — automatically build + open the solution canvas (skip if cancelled).
+    if (freshBridgeRef.current && !ac.signal.aborted) {
       freshBridgeRef.current = false;
       await handleSendToCanvas();
     }
   }
 
+  /** Cancels the run: tells the server to abort, and stops our own stream. */
+  async function cancel() {
+    if (cancelling) return;
+    setCancelling(true);
+    try {
+      await fetch(`/api/bidirectional?conversationId=${encodeURIComponent(conversationId)}`, {
+        method: "DELETE",
+      });
+    } catch {
+      // ignore — we still abort locally below
+    }
+    // Abort a local stream if we're driving one; for a background (reloaded) run
+    // there's nothing local to abort, so reflect the stop directly.
+    abortRef.current?.abort();
+    setStatus("stalled");
+    setCancelling(false);
+  }
+
   const busy = running && status !== null && status !== "done" && status !== "error";
+  // A run is processing on the server but we're not the ones streaming it (e.g.
+  // the page was reloaded mid-run); the poller is keeping the view fresh.
+  const backgroundBusy = !running && isNonTerminal(status);
+  const locked = running || backgroundBusy;
   const hasRun = forward.length > 0 || backward.length > 0;
+
+  // Current round: the live stream reports it directly; a polled/background run
+  // doesn't, so estimate it from expanded-node counts (one expansion per side
+  // per round). null when no run is active.
+  const elapsedRounds = Math.max(
+    forward.filter((n) => n.expanded).length,
+    backward.filter((n) => n.expanded).length,
+  );
+  const currentRound =
+    round ?? (locked && elapsedRounds > 0 ? { index: elapsedRounds, max: maxRounds } : null);
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-6">
         <h1 className="truncate text-base font-semibold">{title}</h1>
         <div className="flex items-center gap-2">
+          {currentRound ? (
+            <div
+              className="border-neon-cyan/40 bg-neon-cyan/5 text-neon-cyan flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[11px] leading-none"
+              title="Search round"
+              aria-live="polite"
+            >
+              <Loader2 className="size-3 animate-spin" />
+              <span>
+                ROUND <span className="font-semibold">{currentRound.index}</span>/{currentRound.max}
+              </span>
+            </div>
+          ) : null}
+          <ToolWindow label="SearXNG" verb="searched" icon={Search} info={toolState.searxng} />
+          <ToolWindow label="Firecrawl" verb="scraped" icon={Flame} info={toolState.firecrawl} />
           <ContextMeter messages={contextMessages} model={model} />
           <ModelSelect conversationId={conversationId} current={model} type="experimental" />
           <Button
             variant="outline"
             size="sm"
             onClick={handleSendToCanvas}
-            disabled={isSeeding || running || (forward.length === 0 && backward.length === 0)}
+            disabled={isSeeding || locked || (forward.length === 0 && backward.length === 0)}
           >
             <Workflow className="size-4" />
             {isSeeding ? "Building…" : "Send to Canvas"}
@@ -389,7 +574,7 @@ export function BidirectionalView({
             variant="outline"
             size="sm"
             onClick={handleSendToEditor}
-            disabled={isExporting || running || (!bridge && !reconcile)}
+            disabled={isExporting || locked || (!bridge && !reconcile)}
           >
             <NotebookPen className="size-4" />
             {isExporting ? "Saving…" : "Send to Editor"}
@@ -411,7 +596,7 @@ export function BidirectionalView({
                 onChange={(e) => setProblemSpec(e.target.value)}
                 placeholder="e.g. Plan a weekend backpacking trip. A step = one concrete preparation/booking action. Use consistent terms: 'trail', 'permit', 'gear'."
                 rows={2}
-                disabled={running}
+                disabled={locked}
                 className="max-h-40 min-h-[52px] resize-none"
               />
             </div>
@@ -429,7 +614,7 @@ export function BidirectionalView({
                   onChange={(e) => setStartState(e.target.value)}
                   placeholder="Where you are now."
                   rows={3}
-                  disabled={running}
+                  disabled={locked}
                   className="max-h-48 min-h-[72px] resize-none"
                 />
               </div>
@@ -446,7 +631,7 @@ export function BidirectionalView({
                   onChange={(e) => setGoalState(e.target.value)}
                   placeholder="What you want to be true."
                   rows={3}
-                  disabled={running}
+                  disabled={locked}
                   className="max-h-48 min-h-[72px] resize-none"
                 />
               </div>
@@ -459,7 +644,7 @@ export function BidirectionalView({
                   min={GOAL_ROUNDS_MIN}
                   max={GOAL_ROUNDS_MAX}
                   value={maxRounds}
-                  disabled={running}
+                  disabled={locked}
                   onChange={(e) => {
                     const n = Number(e.target.value);
                     if (Number.isFinite(n)) {
@@ -469,29 +654,37 @@ export function BidirectionalView({
                   className="h-8 w-16"
                 />
               </label>
-              <Button onClick={run} disabled={running || !startState.trim() || !goalState.trim()} size="sm">
-                {running ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" /> Searching…
-                  </>
-                ) : (
-                  <>
-                    <Play className="size-4" /> Run search
-                  </>
-                )}
-              </Button>
+              {locked ? (
+                <Button onClick={cancel} disabled={cancelling} variant="destructive" size="sm">
+                  {cancelling ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" /> Cancelling…
+                    </>
+                  ) : (
+                    <>
+                      <CircleStop className="size-4" /> Cancel search
+                    </>
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  onClick={run}
+                  disabled={!startState.trim() || !goalState.trim()}
+                  size="sm"
+                >
+                  <Play className="size-4" /> Run search
+                </Button>
+              )}
             </div>
           </div>
 
           {/* Live status */}
-          {busy ? (
+          {busy || backgroundBusy ? (
             <div className="text-neon-cyan flex items-center gap-2 text-xs">
               <Loader2 className="size-3.5 animate-spin" />
               {status ? STATUS_LABEL[status] : "Working…"}
-              {round ? (
-                <span className="text-muted-foreground">
-                  · round {round.index}/{round.max}
-                </span>
+              {backgroundBusy ? (
+                <span className="text-muted-foreground">· running in background — auto-updating</span>
               ) : null}
             </div>
           ) : null}
@@ -508,14 +701,32 @@ export function BidirectionalView({
           {bridge ? <BridgePanel bridge={bridge} /> : null}
 
           {/* Stopped without a bridge */}
-          {!running && !bridge && status === "stalled" ? (
+          {!locked && !bridge && status === "stalled" ? (
             <div className="border-border/70 text-muted-foreground flex items-start gap-2 rounded-md border px-3 py-2 text-xs">
               <CircleDot className="mt-0.5 size-4 shrink-0" />
               <p>
-                No full bridge was found within the round budget. The closest match and remaining
-                gaps are shown below — try raising max rounds, sharpening the goal, or adding a shared
-                glossary to the problem spec.
+                No full bridge was found within the round budget — the closest match and remaining
+                gaps are shown below. Consider the recommended alternatives, or try raising max
+                rounds, sharpening the goal, or adding a shared glossary to the problem spec.
               </p>
+            </div>
+          ) : null}
+
+          {/* Recommended alternatives (no bridge found) */}
+          {!bridge && recommendations.length > 0 ? (
+            <div className="border-neon-yellow/40 bg-neon-yellow/5 space-y-2 rounded-lg border p-4">
+              <div className="text-neon-yellow flex items-center gap-2 text-xs font-medium tracking-wide uppercase">
+                <Lightbulb className="size-3.5" />
+                Recommended alternatives to pursue
+              </div>
+              <ul className="space-y-1.5">
+                {recommendations.map((r, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <span className="text-neon-yellow mt-0.5 shrink-0 font-medium">{i + 1}.</span>
+                    <span className="text-foreground/90">{r}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           ) : null}
 

@@ -1,8 +1,34 @@
 import { getChatModel } from "@/lib/provider";
 import { getConversation, renameConversation } from "@/lib/conversations";
-import { runBidirectional, type GoalEvent } from "@/lib/bidirectional";
+import {
+  cancelRun,
+  getLatestRun,
+  loadRun,
+  runBidirectional,
+  type GoalEvent,
+} from "@/lib/bidirectional";
 
 export const maxDuration = 300;
+
+/** Returns the latest persisted run for a conversation — used by the client to
+ *  poll progress after a reload (the run keeps going server-side regardless). */
+export async function GET(request: Request) {
+  const conversationId = new URL(request.url).searchParams.get("conversationId");
+  if (!conversationId) {
+    return Response.json({ error: "conversationId is required" }, { status: 400 });
+  }
+  const row = getLatestRun(conversationId);
+  return Response.json({ run: row ? loadRun(row) : null });
+}
+
+/** Cancels the latest in-flight run for a conversation (aborts the orchestrator). */
+export async function DELETE(request: Request) {
+  const conversationId = new URL(request.url).searchParams.get("conversationId");
+  if (!conversationId) {
+    return Response.json({ error: "conversationId is required" }, { status: 400 });
+  }
+  return Response.json({ cancelled: cancelRun(conversationId) });
+}
 
 interface Body {
   conversationId?: string;
@@ -57,8 +83,19 @@ export async function POST(request: Request) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (event: GoalEvent) =>
-        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+      // Tolerate client disconnects (e.g. a page reload): keep consuming the
+      // generator so the run finishes and fully persists — the client can then
+      // pick the result back up by polling GET. Once the client is gone, sends
+      // become no-ops instead of throwing and aborting the run.
+      let clientGone = false;
+      const send = (event: GoalEvent) => {
+        if (clientGone) return;
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          clientGone = true;
+        }
+      };
       try {
         for await (const event of runBidirectional({
           conversationId,
@@ -73,7 +110,11 @@ export async function POST(request: Request) {
       } catch (err) {
         send({ type: "error", message: err instanceof Error ? err.message : String(err) });
       } finally {
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // already closed (client disconnected) — nothing to do
+        }
       }
     },
   });

@@ -1,0 +1,1 @@
+ALTER TABLE `goal_runs` ADD `recommendations` text;

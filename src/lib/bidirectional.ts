@@ -7,8 +7,10 @@ import dagre from "dagre";
 import type { Edge, Node } from "@xyflow/react";
 
 import { db } from "@/db/client";
-import { goalRuns, type GoalRun, type GoalStatus } from "@/db/schema";
+import { goalRuns, mcpServers, type GoalRun, type GoalStatus } from "@/db/schema";
 import { createCanvas, renameCanvas, saveCanvasGraph, type CanvasGraph } from "./canvas";
+import { searxngSearch, type SearchResult } from "./web";
+import { callMcpTool, connectServer, syncMcpServersFromFile } from "./mcp";
 import {
   DEFAULT_GOAL_ROUNDS,
   GOAL_ROUNDS_MAX,
@@ -33,6 +35,18 @@ const BEAM_WIDTH = 6; // cheapest unexpanded nodes kept per side
 const MAX_NEW_PER_EXPANSION = 3; // 1–3 children per expansion (per the spec)
 const STALL_ROUNDS = 3; // stop if the best reconciler score hasn't improved for this many rounds
 
+// Low temperature keeps the agents grounded. No maxOutputTokens cap — the prompt
+// GUARDRAILS do the brevity work, and a cap risks truncating the JSON nodes that
+// get rendered, so we leave output length to the model.
+const TEMPERATURE = 0.2;
+
+// Web grounding: every expansion is backed by a live SearXNG search and a
+// Firecrawl scrape of the top hit, so the agents reason from real evidence
+// rather than their own knowledge.
+const GROUND_RESULTS = 4; // SearXNG results pulled per query
+const GROUND_READ_CHARS = 3500; // chars kept from the Firecrawl scrape
+const FIRECRAWL_TIMEOUT_MS = 20_000; // budget for connecting + scraping
+
 export type GoalEvent =
   | { type: "status"; status: GoalStatus }
   | { type: "init"; forward: GoalNode[]; backward: GoalNode[] }
@@ -46,6 +60,14 @@ export type GoalEvent =
   | { type: "nodes"; nodes: GoalNode[] }
   | { type: "reconcile"; round: number; result: ReconcileResult }
   | { type: "bridge"; bridge: BridgeResult }
+  | { type: "recommendations"; items: string[] }
+  | {
+      type: "tool";
+      tool: "searxng" | "firecrawl";
+      status: "running" | "done" | "error";
+      /** What the tool was used for: the search query, or the scraped URL. */
+      detail: string;
+    }
   | { type: "done"; runId: string }
   | { type: "error"; message: string };
 
@@ -59,6 +81,40 @@ export function getLatestRun(conversationId: string): GoalRun | undefined {
     .get();
 }
 
+// In-flight run controllers, keyed by run id, so a cancel request can abort the
+// orchestrator (and its in-flight model call). Kept on globalThis so it survives
+// Next.js dev hot-reloads, like the DB client.
+const globalForGoal = globalThis as unknown as {
+  __goalControllers?: Map<string, AbortController>;
+};
+const runControllers: Map<string, AbortController> =
+  globalForGoal.__goalControllers ?? new Map();
+if (process.env.NODE_ENV !== "production") globalForGoal.__goalControllers = runControllers;
+
+function isProcessing(status: GoalStatus): boolean {
+  return status === "planning" || status === "expanding" || status === "reconciling";
+}
+
+/**
+ * Cancels the latest still-processing run for a conversation. Aborts the live
+ * orchestrator if one is registered; otherwise (e.g. after a server restart)
+ * just marks the row stopped. Returns whether anything was cancelled.
+ */
+export function cancelRun(conversationId: string): boolean {
+  const row = getLatestRun(conversationId);
+  if (!row || !isProcessing(row.status)) return false;
+  const controller = runControllers.get(row.id);
+  if (controller) {
+    controller.abort();
+    return true;
+  }
+  db.update(goalRuns)
+    .set({ status: "stalled", updatedAt: new Date().toISOString() })
+    .where(eq(goalRuns.id, row.id))
+    .run();
+  return true;
+}
+
 /** Parsed view of a persisted run for the UI. */
 export interface LoadedRun {
   id: string;
@@ -69,6 +125,8 @@ export interface LoadedRun {
   backward: GoalNode[];
   reconcile: ReconcileResult | null;
   bridge: BridgeResult | null;
+  /** Alternative options to pursue, generated when no bridge was found. */
+  recommendations: string[];
   status: GoalStatus;
   maxRounds: number;
   error: string | null;
@@ -93,6 +151,7 @@ export function loadRun(row: GoalRun): LoadedRun {
     backward: safeJson<GoalNode[]>(row.backwardNodes, []),
     reconcile: safeJson<ReconcileResult | null>(row.reconcile, null),
     bridge: safeJson<BridgeResult | null>(row.bridge, null),
+    recommendations: safeJson<string[]>(row.recommendations, []),
     status: row.status,
     maxRounds: row.maxRounds,
     error: row.error,
@@ -129,6 +188,11 @@ export function runToMarkdown(run: LoadedRun): { title: string; content: string 
     if (run.reconcile && run.reconcile.unmetConditions.length > 0) {
       parts.push("**Still unmet:**", "");
       for (const c of run.reconcile.unmetConditions) parts.push(`- ${c}`);
+      parts.push("");
+    }
+    if (run.recommendations.length > 0) {
+      parts.push("## Recommended alternatives", "");
+      for (const r of run.recommendations) parts.push(`- ${r}`);
       parts.push("");
     }
   }
@@ -275,6 +339,22 @@ export function createRunCanvas(run: LoadedRun): string {
 
 // --- Prompts ---------------------------------------------------------------
 
+/**
+ * Shared anti-hallucination + brevity rules appended to every agent prompt.
+ * Keeps local models grounded in the given inputs and stops them from padding
+ * the output with prose, reasoning, or invented detail — which both wastes
+ * tokens and pollutes the shared state schema.
+ */
+const GUARDRAILS =
+  "\n\nRULES (follow strictly):\n" +
+  "- Ground EVERYTHING in the PROBLEM SPEC, START/GOAL states, and the frontiers given to you. Do NOT invent " +
+  "facts, names, numbers, tools, or steps that are not stated or clearly implied. If you are unsure, OMIT it " +
+  "rather than guess — an empty array is better than a fabricated one.\n" +
+  "- Output ONLY the requested JSON. No preamble, no commentary, no explanation, no markdown code fences, and " +
+  "no chain-of-thought. Do not restate the inputs.\n" +
+  "- Be terse. Each string is ONE short clause (aim for <12 words). Prefer fewer, high-quality items over " +
+  "padding; never repeat, rephrase, or list near-duplicates. Stop as soon as the JSON is complete.";
+
 const SCHEMA_HINT =
   "Each node is an object: " +
   '{"description": string (one line), "established_facts": string[] (what is GUARANTEED true at/after this node), ' +
@@ -286,44 +366,183 @@ const BOOTSTRAP_SYSTEM =
   "You are seeding a bidirectional goal search. Given a problem, its START state, and its GOAL state, extract two short lists in a shared vocabulary:\n" +
   "1) start_facts: concrete things GUARANTEED true in the START state.\n" +
   "2) goal_conditions: the conditions that must hold for the GOAL to be satisfied.\n" +
-  'Return ONLY a JSON object: {"start_facts": string[], "goal_conditions": string[]}. 2–5 items each, each a short self-contained sentence.';
+  'Return ONLY a JSON object: {"start_facts": string[], "goal_conditions": string[]}. 2–5 items each, each a short self-contained clause.' +
+  GUARDRAILS;
 
 function forwardSystem(maxNew: number): string {
   return (
     "You are the FORWARD agent in a bidirectional search. You build a solution path FORWARD from the START " +
     "state toward the GOAL, ONE bounded expansion per round. A 'step' is the smallest meaningful operation " +
     "in this problem domain — do NOT leap to the goal.\n" +
-    `Produce 1–${maxNew} NEW forward nodes, each exactly one bounded step beyond the node you were asked to expand. ` +
-    "PREFER expansions whose established_facts satisfy one or more of the backward agent's required_conditions " +
-    "(this pulls you to the middle). Assign honest cost_from_origin = parent cost + step effort (1 = trivial, " +
-    "higher = harder). Only list facts you can actually guarantee.\n" +
-    `OUTPUT: a JSON array of new forward nodes, nothing else. ${SCHEMA_HINT}`
+    "Take the most DIRECT, lowest-cost next step that makes real progress toward the GOAL. Do NOT over-think " +
+    "or over-engineer: return a SINGLE best next node when there is one obvious step; only return up to " +
+    `${maxNew} nodes when there are genuinely DISTINCT, viable alternative next steps worth exploring separately.\n` +
+    "Stay in your lane: think ONLY about moving forward toward the goal. Do NOT try to anticipate the backward " +
+    "side, guess where the paths will meet, or shape your facts to match it — detecting the meeting point is the " +
+    "RECONCILER's job, not yours. If the reconciler gave a hint about which facts to establish next, pursue them " +
+    "the most efficient way.\n" +
+    "You are given EVIDENCE retrieved LIVE from SearXNG web search plus a Firecrawl page scrape. Base every " +
+    "established_fact ONLY on that evidence and the problem inputs — do NOT use your own prior knowledge or " +
+    "invent facts. If the evidence is thin, keep facts minimal and flag uncertainty; never fabricate.\n" +
+    "Assign honest cost_from_origin = parent cost + step effort (1 = trivial, higher = harder).\n" +
+    `OUTPUT: a JSON array of new forward nodes, nothing else. ${SCHEMA_HINT}` +
+    GUARDRAILS
   );
 }
 
 function backwardSystem(maxNew: number): string {
   return (
-    "You are the BACKWARD agent in a bidirectional search. You work BACKWARD from the GOAL, exposing the " +
-    "preconditions that must hold for the goal to be reachable — ONE regression layer per round.\n" +
+    "You are the BACKWARD agent in a bidirectional search. You work BACKWARD from the GOAL toward the START, " +
+    "exposing the preconditions that must hold for the goal to be reachable — ONE regression layer per round.\n" +
     `For the node you were asked to regress, answer: "What must be TRUE immediately BEFORE this state, such ` +
-    `that one step produces it?" Produce 1–${maxNew} predecessor nodes. Each predecessor's required_conditions ` +
-    "are its own preconditions; its established_facts are what it guarantees (which should match the child's " +
-    "preconditions). PREFER predecessors whose required_conditions are plausibly satisfiable by the forward " +
-    "agent's current established_facts. cost_from_origin = child cost + regression-step effort, measured FROM GOAL.\n" +
-    `OUTPUT: a JSON array of new backward nodes, nothing else. ${SCHEMA_HINT}`
+    'that one step produces it?" Take the most DIRECT regression: return a SINGLE best predecessor when there ' +
+    `is one obvious one; only return up to ${maxNew} when there are genuinely DISTINCT, viable predecessors. Do ` +
+    "NOT over-think or invent elaborate preconditions. Each predecessor's required_conditions are its own " +
+    "preconditions; its established_facts are what it guarantees (which should match the child's preconditions).\n" +
+    "Stay in your lane: think ONLY about regressing toward the start. Do NOT try to anticipate the forward side, " +
+    "guess where the paths will meet, or shape your conditions to match it — that is the RECONCILER's job. If the " +
+    "reconciler gave a hint about which preconditions to relax/regress, follow it efficiently.\n" +
+    "You are given EVIDENCE retrieved LIVE from SearXNG web search plus a Firecrawl page scrape. Base your " +
+    "preconditions and facts ONLY on that evidence and the problem inputs — do NOT use your own prior knowledge " +
+    "or invent facts. If the evidence is thin, keep them minimal and flag uncertainty; never fabricate.\n" +
+    "cost_from_origin = child cost + regression-step effort, measured FROM GOAL.\n" +
+    `OUTPUT: a JSON array of new backward nodes, nothing else. ${SCHEMA_HINT}` +
+    GUARDRAILS
   );
 }
 
 const RECONCILER_SYSTEM =
-  "You are the RECONCILER in a bidirectional search. Each round you check whether the forward and backward " +
-  "frontiers have met, and you emit guidance for both agents.\n" +
+  "You are the RECONCILER in a bidirectional search — the ONLY component that compares the two frontiers. The " +
+  "forward and backward agents work independently; your job is to find where they are CLOSEST and steer them to " +
+  "meet by the most EFFICIENT (lowest combined cost) route.\n" +
   "1) For every (F, B) pair, judge how well F.established_facts satisfy B.required_conditions; score 0.0–1.0.\n" +
-  "2) Pick the best pair (highest score).\n" +
+  "2) Pick the best pair — the one closest to meeting; on ties prefer the LOWEST combined cost_from_origin.\n" +
   "3) bridge_found = true ONLY if EVERY required_condition of B is satisfied by F (score ~1.0, no critical gap).\n" +
-  "4) If NOT found, state exactly which of B's required_conditions are still unmet, and give one hint telling the " +
-  "FORWARD agent which facts to establish and one telling the BACKWARD agent which preconditions to relax/regress.\n" +
+  "4) If NOT found, list exactly which of that pair's required_conditions are still unmet. Then give ONE focused " +
+  "hint to the FORWARD agent (the single highest-leverage fact to establish next) and ONE to the BACKWARD agent " +
+  "(the single precondition to relax/regress next) that most cheaply closes the gap. Point at the one thing that " +
+  "matters most — not a laundry list.\n" +
   'OUTPUT JSON ONLY: {"best_pair": {"forward_id": string, "backward_id": string, "score": number}, ' +
-  '"bridge_found": boolean, "unmet_conditions": string[], "hint_to_forward": string, "hint_to_backward": string}.';
+  '"bridge_found": boolean, "unmet_conditions": string[], "hint_to_forward": string, "hint_to_backward": string}.' +
+  GUARDRAILS;
+
+const RECOMMEND_SYSTEM =
+  "You are an advisor wrapping up a bidirectional goal search that did NOT find a complete path within budget. " +
+  "Given the problem, the START/GOAL states, the forward and backward frontiers reached, and the conditions " +
+  "still unmet, suggest concrete ALTERNATIVE options the user could pursue to make the goal reachable. Good " +
+  "options: relax or change a specific blocking constraint, acquire a missing resource/precondition, take a " +
+  "different approach for the unmet part, split the goal into a more reachable sub-goal, or adjust the goal " +
+  "itself. Each option must be specific and actionable, tied to what actually blocked this search.\n" +
+  "Return ONLY a JSON array of 3–5 short option strings." +
+  GUARDRAILS;
+
+// --- Web grounding (SearXNG + Firecrawl) -----------------------------------
+
+function raceTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
+  ]);
+}
+
+/** Extracts the text parts from an MCP tool result. */
+function mcpResultText(result: unknown): string {
+  const r = result as { content?: Array<{ type?: string; text?: string }> };
+  if (!Array.isArray(r?.content)) return "";
+  return r.content
+    .filter((c) => c?.type === "text" && typeof c.text === "string")
+    .map((c) => c.text as string)
+    .join("\n")
+    .trim();
+}
+
+/**
+ * Scrapes a URL via the configured Firecrawl MCP server. Connects on demand and
+ * picks the server's scrape tool by name. Throws (caught by the caller) if no
+ * Firecrawl server/tool is available or the call times out.
+ */
+async function firecrawlScrape(url: string): Promise<string> {
+  try {
+    syncMcpServersFromFile();
+  } catch {
+    // a bad mcp.json must not break grounding
+  }
+  const server = db
+    .select()
+    .from(mcpServers)
+    .where(eq(mcpServers.enabled, true))
+    .all()
+    .find((s) => /firecrawl/i.test(s.name));
+  if (!server) throw new Error("No enabled Firecrawl MCP server is configured.");
+
+  const conn = await raceTimeout(connectServer(server), FIRECRAWL_TIMEOUT_MS);
+  if (conn.status !== "connected") {
+    throw new Error(conn.error ?? "Firecrawl MCP server is not connected.");
+  }
+  const tool =
+    conn.tools.find((t) => /scrape/i.test(t.name)) ??
+    conn.tools.find((t) => /(extract|read|fetch)/i.test(t.name));
+  if (!tool) throw new Error("Firecrawl MCP server exposes no scrape tool.");
+
+  const result = await raceTimeout(
+    callMcpTool(server.id, tool.name, {
+      url,
+      formats: ["markdown"],
+      onlyMainContent: true,
+    }),
+    FIRECRAWL_TIMEOUT_MS,
+  );
+  return mcpResultText(result).slice(0, GROUND_READ_CHARS);
+}
+
+/** Formats search results + a scraped page into an EVIDENCE block for an agent. */
+function buildEvidence(results: SearchResult[], scraped: string, scrapedUrl: string): string {
+  if (results.length === 0 && !scraped) {
+    return "(no web evidence could be retrieved this step — do NOT fabricate; keep any facts minimal and flagged as uncertain)";
+  }
+  const lines: string[] = [];
+  if (results.length > 0) {
+    lines.push("Search results (SearXNG):");
+    results.forEach((r, i) => lines.push(`[${i + 1}] ${r.title} — ${r.url}\n${r.snippet}`));
+  }
+  if (scraped) {
+    lines.push(`\nScraped page (Firecrawl) — ${scrapedUrl}:\n${scraped}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Grounds one expansion: runs a SearXNG search, scrapes the top hit with
+ * Firecrawl, and returns an EVIDENCE block. Yields tool-activity events (for the
+ * UI windows) and returns the evidence string. Best-effort — failures degrade to
+ * whatever evidence was gathered.
+ */
+async function* groundQuery(query: string): AsyncGenerator<GoalEvent, string> {
+  const q = query.trim().replace(/\s+/g, " ").slice(0, 300);
+  if (!q) return buildEvidence([], "", "");
+
+  yield { type: "tool", tool: "searxng", status: "running", detail: q };
+  let results: SearchResult[] = [];
+  try {
+    results = await searxngSearch(q, GROUND_RESULTS);
+    yield { type: "tool", tool: "searxng", status: "done", detail: q };
+  } catch {
+    yield { type: "tool", tool: "searxng", status: "error", detail: q };
+  }
+
+  let scraped = "";
+  const top = results.find((r) => r.url);
+  if (top?.url) {
+    yield { type: "tool", tool: "firecrawl", status: "running", detail: top.url };
+    try {
+      scraped = await firecrawlScrape(top.url);
+      yield { type: "tool", tool: "firecrawl", status: "done", detail: top.url };
+    } catch {
+      yield { type: "tool", tool: "firecrawl", status: "error", detail: top.url };
+    }
+  }
+  return buildEvidence(results, scraped, top?.url ?? "");
+}
 
 // --- Tolerant parsing ------------------------------------------------------
 
@@ -509,6 +728,39 @@ function buildBridge(
   };
 }
 
+/**
+ * When the search ends without a bridge, asks the model for concrete alternative
+ * options to pursue (relax a constraint, get a missing resource, change the
+ * approach/goal). Best-effort: returns [] on any failure.
+ */
+async function buildRecommendations(
+  model: LanguageModel,
+  context: string,
+  forward: GoalNode[],
+  backward: GoalNode[],
+  unmet: string[],
+): Promise<string[]> {
+  const prompt =
+    `${context}\n\nFORWARD FRONTIER:\n${frontierForPrompt(forward)}\n\n` +
+    `BACKWARD FRONTIER:\n${frontierForPrompt(backward)}\n\n` +
+    `CONDITIONS STILL UNMET:\n${
+      unmet.length ? unmet.map((u) => `- ${u}`).join("\n") : "(the frontiers never overlapped)"
+    }`;
+  try {
+    const { text } = await generateText({
+      model,
+      system: RECOMMEND_SYSTEM,
+      prompt,
+      temperature: TEMPERATURE,
+    });
+    const arr = extractJson(text, "[");
+    if (Array.isArray(arr)) return toStringArray(arr).slice(0, 5);
+  } catch {
+    // best-effort — no recommendations on failure
+  }
+  return [];
+}
+
 // --- Orchestrator ----------------------------------------------------------
 
 /**
@@ -571,6 +823,11 @@ export async function* runBidirectional(opts: {
       ...extra,
     });
 
+  // Register a controller so a cancel request can abort this run + its model call.
+  const controller = new AbortController();
+  const abortSignal = controller.signal;
+  runControllers.set(runId, controller);
+
   try {
     // 1) Bootstrap the two roots --------------------------------------------
     yield { type: "status", status: "planning" };
@@ -581,6 +838,8 @@ export async function* runBidirectional(opts: {
         model,
         system: BOOTSTRAP_SYSTEM,
         prompt: context,
+        temperature: TEMPERATURE,
+        abortSignal,
       });
       const obj = extractJson(text, "{") as
         | { start_facts?: unknown; goal_conditions?: unknown }
@@ -626,9 +885,26 @@ export async function* runBidirectional(opts: {
     let hintBackward = "";
     let bestScore = -1;
     let stalls = 0;
+    let lastResult: ReconcileResult | null = null;
+
+    // Shared no-bridge ending: recommend alternative options to pursue, then stop.
+    async function* finishStalled(): AsyncGenerator<GoalEvent> {
+      yield { type: "status", status: "stalled" };
+      const recommendations = await buildRecommendations(
+        model,
+        context,
+        forward,
+        backward,
+        lastResult?.unmetConditions ?? [],
+      );
+      persist("stalled", { recommendations: JSON.stringify(recommendations) });
+      if (recommendations.length > 0) yield { type: "recommendations", items: recommendations };
+      yield { type: "done", runId };
+    }
 
     // 2) Rounds --------------------------------------------------------------
     for (let round = 1; round <= maxRounds; round++) {
+      if (abortSignal.aborted) break; // cancelled between rounds
       const fExpand = cheapestUnexpanded(forward);
       const bExpand = cheapestUnexpanded(backward);
       if (!fExpand && !bExpand) break; // both frontiers exhausted
@@ -642,6 +918,17 @@ export async function* runBidirectional(opts: {
         backwardExpand: bExpand?.id ?? null,
       };
 
+      // Ground each expansion in live web evidence (SearXNG + Firecrawl) before
+      // the agent reasons, so it builds on real sources instead of its own memory.
+      let fEvidence = "";
+      let bEvidence = "";
+      if (fExpand) {
+        fEvidence = yield* groundQuery(`${fExpand.description} ${hintForward}`);
+      }
+      if (bExpand && !abortSignal.aborted) {
+        bEvidence = yield* groundQuery(`${bExpand.description} ${hintBackward}`);
+      }
+
       const [fText, bText] = await Promise.all([
         fExpand
           ? generateText({
@@ -649,9 +936,11 @@ export async function* runBidirectional(opts: {
               system: forwardSystem(MAX_NEW_PER_EXPANSION),
               prompt:
                 `${context}\n\nYOUR CURRENT FORWARD FRONTIER:\n${frontierForPrompt(forward)}\n\n` +
-                `BACKWARD AGENT'S EXPOSED SUB-GOALS (steer toward these):\n${frontierForPrompt(backward)}\n\n` +
-                `RECONCILER HINT (facts to establish): ${hintForward || "(none yet)"}\n\n` +
+                `RECONCILER HINT (facts to establish next): ${hintForward || "(none yet)"}\n\n` +
+                `EVIDENCE (live SearXNG + Firecrawl — base your facts ONLY on this):\n${fEvidence}\n\n` +
                 `EXPAND THIS NODE: ${fExpand.id} — ${fExpand.description}`,
+              temperature: TEMPERATURE,
+              abortSignal,
             }).then((r) => r.text)
           : Promise.resolve(""),
         bExpand
@@ -660,9 +949,11 @@ export async function* runBidirectional(opts: {
               system: backwardSystem(MAX_NEW_PER_EXPANSION),
               prompt:
                 `${context}\n\nYOUR CURRENT BACKWARD FRONTIER (GOAL is the root):\n${frontierForPrompt(backward)}\n\n` +
-                `FORWARD AGENT'S ACHIEVED FACTS (regress toward what is reachable):\n${frontierForPrompt(forward)}\n\n` +
-                `RECONCILER HINT (preconditions to relax/regress): ${hintBackward || "(none yet)"}\n\n` +
+                `RECONCILER HINT (preconditions to relax/regress next): ${hintBackward || "(none yet)"}\n\n` +
+                `EVIDENCE (live SearXNG + Firecrawl — base your facts ONLY on this):\n${bEvidence}\n\n` +
                 `REGRESS THIS NODE: ${bExpand.id} — ${bExpand.description}`,
+              temperature: TEMPERATURE,
+              abortSignal,
             }).then((r) => r.text)
           : Promise.resolve(""),
       ]);
@@ -700,6 +991,8 @@ export async function* runBidirectional(opts: {
         const { text } = await generateText({
           model,
           system: RECONCILER_SYSTEM,
+          temperature: TEMPERATURE,
+          abortSignal,
           prompt:
             `${context}\n\nFORWARD FRONTIER:\n${frontierForPrompt(forward)}\n\n` +
             `BACKWARD FRONTIER:\n${frontierForPrompt(backward)}`,
@@ -711,6 +1004,7 @@ export async function* runBidirectional(opts: {
 
       persist("reconciling", { reconcile: JSON.stringify(result) });
       yield { type: "reconcile", round, result };
+      lastResult = result;
 
       if (result.bridgeFound) {
         const bridge = buildBridge(result, forward, backward);
@@ -739,20 +1033,36 @@ export async function* runBidirectional(opts: {
       hintBackward = result.hintToBackward;
 
       if (stalls >= STALL_ROUNDS) {
-        persist("stalled");
-        yield { type: "status", status: "stalled" };
-        yield { type: "done", runId };
+        yield* finishStalled();
         return;
       }
     }
 
-    // 3) Round cap reached without a bridge ---------------------------------
-    persist("stalled");
-    yield { type: "status", status: "stalled" };
-    yield { type: "done", runId };
+    // 3) Cancelled, or round cap / exhausted frontiers reached without a bridge.
+    if (abortSignal.aborted) {
+      persist("stalled");
+      yield { type: "status", status: "stalled" };
+      yield { type: "done", runId };
+    } else {
+      yield* finishStalled();
+    }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    touch({ status: "error", error: message });
-    yield { type: "error", message };
+    // An abort (cancel) surfaces here as an error from the in-flight model call —
+    // treat it as a graceful stop, not a failure.
+    if (abortSignal.aborted) {
+      try {
+        persist("stalled");
+      } catch {
+        // ignore — best-effort
+      }
+      yield { type: "status", status: "stalled" };
+      yield { type: "done", runId };
+    } else {
+      const message = err instanceof Error ? err.message : String(err);
+      touch({ status: "error", error: message });
+      yield { type: "error", message };
+    }
+  } finally {
+    runControllers.delete(runId);
   }
 }

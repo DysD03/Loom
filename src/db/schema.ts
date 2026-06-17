@@ -208,6 +208,8 @@ export const goalRuns = sqliteTable(
     reconcile: text("reconcile"),
     /** JSON-encoded BridgeResult — the stitched START→…→GOAL path, once found. */
     bridge: text("bridge"),
+    /** JSON-encoded string[] of alternative options to pursue when no bridge was found. */
+    recommendations: text("recommendations"),
     /** Cap on search→reconcile rounds for this run. */
     maxRounds: integer("max_rounds").notNull().default(6),
     status: text("status", {
