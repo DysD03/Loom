@@ -210,6 +210,10 @@ export const goalRuns = sqliteTable(
     bridge: text("bridge"),
     /** JSON-encoded string[] of alternative options to pursue when no bridge was found. */
     recommendations: text("recommendations"),
+    /** Natural-language summary of how the path goes from START to GOAL (once bridged). */
+    summary: text("summary"),
+    /** JSON-encoded ToolLogEntry[] — what SearXNG/Firecrawl researched, and when. */
+    toolLog: text("tool_log"),
     /** Cap on search→reconcile rounds for this run. */
     maxRounds: integer("max_rounds").notNull().default(6),
     status: text("status", {

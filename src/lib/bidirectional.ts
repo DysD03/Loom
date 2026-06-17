@@ -19,6 +19,7 @@ import {
   type GoalNode,
   type GoalSide,
   type ReconcileResult,
+  type ToolLogEntry,
 } from "./bidirectional-config";
 
 export type {
@@ -26,6 +27,7 @@ export type {
   GoalNode,
   GoalSide,
   ReconcileResult,
+  ToolLogEntry,
 } from "./bidirectional-config";
 
 // Search sizing — bounded so the running context fits a local model. Each round
@@ -60,6 +62,7 @@ export type GoalEvent =
   | { type: "nodes"; nodes: GoalNode[] }
   | { type: "reconcile"; round: number; result: ReconcileResult }
   | { type: "bridge"; bridge: BridgeResult }
+  | { type: "summary"; text: string }
   | { type: "recommendations"; items: string[] }
   | {
       type: "tool";
@@ -67,6 +70,8 @@ export type GoalEvent =
       status: "running" | "done" | "error";
       /** What the tool was used for: the search query, or the scraped URL. */
       detail: string;
+      /** ISO timestamp of the event. */
+      at: string;
     }
   | { type: "done"; runId: string }
   | { type: "error"; message: string };
@@ -127,6 +132,10 @@ export interface LoadedRun {
   bridge: BridgeResult | null;
   /** Alternative options to pursue, generated when no bridge was found. */
   recommendations: string[];
+  /** Narrative of how the path goes from START to GOAL (once bridged). */
+  summary: string | null;
+  /** What SearXNG/Firecrawl researched during the run, and when. */
+  toolLog: ToolLogEntry[];
   status: GoalStatus;
   maxRounds: number;
   error: string | null;
@@ -152,6 +161,8 @@ export function loadRun(row: GoalRun): LoadedRun {
     reconcile: safeJson<ReconcileResult | null>(row.reconcile, null),
     bridge: safeJson<BridgeResult | null>(row.bridge, null),
     recommendations: safeJson<string[]>(row.recommendations, []),
+    summary: row.summary,
+    toolLog: safeJson<ToolLogEntry[]>(row.toolLog, []),
     status: row.status,
     maxRounds: row.maxRounds,
     error: row.error,
@@ -174,6 +185,8 @@ export function runToMarkdown(run: LoadedRun): { title: string; content: string 
   parts.push("## Result", "");
   if (run.bridge) {
     parts.push(`**Bridge found** — total estimated cost ${run.bridge.totalCost}.`, "");
+    if (run.summary) parts.push(run.summary.trim(), "");
+    parts.push("**Path:**", "");
     run.bridge.path.forEach((step, i) => parts.push(`${i + 1}. ${step}`));
     parts.push("");
   } else {
@@ -436,6 +449,13 @@ const RECOMMEND_SYSTEM =
   "Return ONLY a JSON array of 3–5 short option strings." +
   GUARDRAILS;
 
+const SUMMARY_SYSTEM =
+  "You are summarizing how a bidirectional search connected a START state to a GOAL. You are given the problem, " +
+  "the start and goal, and the ordered stitched path (START → … → GOAL). Write a SHORT, clear narrative " +
+  "(3–6 sentences) of how the solution gets from start to end and why each major step follows from the last. " +
+  "Base it ONLY on the given path and inputs — do not invent steps. Plain prose: no preamble, no markdown " +
+  "headings, no bullet list, no restating the path verbatim.";
+
 // --- Web grounding (SearXNG + Firecrawl) -----------------------------------
 
 function raceTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -517,28 +537,43 @@ function buildEvidence(results: SearchResult[], scraped: string, scrapedUrl: str
  * UI windows) and returns the evidence string. Best-effort — failures degrade to
  * whatever evidence was gathered.
  */
-async function* groundQuery(query: string): AsyncGenerator<GoalEvent, string> {
+async function* groundQuery(
+  query: string,
+  log: ToolLogEntry[],
+): AsyncGenerator<GoalEvent, string> {
   const q = query.trim().replace(/\s+/g, " ").slice(0, 300);
   if (!q) return buildEvidence([], "", "");
 
-  yield { type: "tool", tool: "searxng", status: "running", detail: q };
+  // Records a finished action in the persisted log and emits a matching event.
+  const finish = (
+    tool: ToolLogEntry["tool"],
+    status: ToolLogEntry["status"],
+    detail: string,
+  ): GoalEvent => {
+    const at = new Date().toISOString();
+    log.push({ tool, detail, status, at });
+    return { type: "tool", tool, status, detail, at };
+  };
+  const now = () => new Date().toISOString();
+
+  yield { type: "tool", tool: "searxng", status: "running", detail: q, at: now() };
   let results: SearchResult[] = [];
   try {
     results = await searxngSearch(q, GROUND_RESULTS);
-    yield { type: "tool", tool: "searxng", status: "done", detail: q };
+    yield finish("searxng", "done", q);
   } catch {
-    yield { type: "tool", tool: "searxng", status: "error", detail: q };
+    yield finish("searxng", "error", q);
   }
 
   let scraped = "";
   const top = results.find((r) => r.url);
   if (top?.url) {
-    yield { type: "tool", tool: "firecrawl", status: "running", detail: top.url };
+    yield { type: "tool", tool: "firecrawl", status: "running", detail: top.url, at: now() };
     try {
       scraped = await firecrawlScrape(top.url);
-      yield { type: "tool", tool: "firecrawl", status: "done", detail: top.url };
+      yield finish("firecrawl", "done", top.url);
     } catch {
-      yield { type: "tool", tool: "firecrawl", status: "error", detail: top.url };
+      yield finish("firecrawl", "error", top.url);
     }
   }
   return buildEvidence(results, scraped, top?.url ?? "");
@@ -812,12 +847,14 @@ export async function* runBidirectional(opts: {
   let bCounter = 0;
   const nextForwardId = () => `F${++fCounter}`;
   const nextBackwardId = () => `B${++bCounter}`;
+  const toolLog: ToolLogEntry[] = [];
 
   const context = `PROBLEM SPEC:\n${problemSpec}\n\nSTART STATE:\n${startState}\n\nGOAL STATE:\n${goalState}`;
 
   const persist = (status: GoalStatus, extra: Partial<GoalRun> = {}) =>
     touch({
       status,
+      toolLog: JSON.stringify(toolLog),
       forwardNodes: JSON.stringify(forward),
       backwardNodes: JSON.stringify(backward),
       ...extra,
@@ -923,10 +960,10 @@ export async function* runBidirectional(opts: {
       let fEvidence = "";
       let bEvidence = "";
       if (fExpand) {
-        fEvidence = yield* groundQuery(`${fExpand.description} ${hintForward}`);
+        fEvidence = yield* groundQuery(`${fExpand.description} ${hintForward}`, toolLog);
       }
       if (bExpand && !abortSignal.aborted) {
-        bEvidence = yield* groundQuery(`${bExpand.description} ${hintBackward}`);
+        bEvidence = yield* groundQuery(`${bExpand.description} ${hintBackward}`, toolLog);
       }
 
       const [fText, bText] = await Promise.all([
@@ -1014,6 +1051,28 @@ export async function* runBidirectional(opts: {
             bridge: JSON.stringify(bridge),
           });
           yield { type: "bridge", bridge };
+
+          // Summarize how the path gets from START to GOAL.
+          let summary = "";
+          try {
+            const { text } = await generateText({
+              model,
+              system: SUMMARY_SYSTEM,
+              prompt:
+                `${context}\n\nSTITCHED PATH (START → … → GOAL):\n` +
+                bridge.path.map((step, i) => `${i + 1}. ${step}`).join("\n"),
+              temperature: TEMPERATURE,
+              abortSignal,
+            });
+            summary = text.trim();
+          } catch {
+            // best-effort — the bridge stands on its own without a summary
+          }
+          if (summary) {
+            touch({ summary });
+            yield { type: "summary", text: summary };
+          }
+
           yield { type: "status", status: "done" };
           yield { type: "done", runId };
           return;

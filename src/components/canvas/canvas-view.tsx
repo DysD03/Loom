@@ -28,6 +28,7 @@ import { Heading, ImageDown, LayoutGrid, Maximize, StickyNote } from "lucide-rea
 import { Button } from "@/components/ui/button";
 import { nodeTypes, type CanvasNode } from "@/components/canvas/nodes";
 import { FloatingEdge } from "@/components/canvas/floating-edge";
+import { CanvasChat } from "@/components/canvas/canvas-chat";
 import { saveCanvasAction } from "@/app/canvas/actions";
 import { SendToOpencodeButton } from "@/components/opencode/send-button";
 
@@ -274,6 +275,7 @@ export function CanvasView({
             initialNodes={initialNodes}
             initialEdges={initialEdges}
           />
+          <CanvasChat />
         </ReactFlowProvider>
       </div>
     </div>

@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 
-import { generateText, type LanguageModel } from "ai";
+import { generateObject, generateText, type LanguageModel } from "ai";
+import { z } from "zod";
 
 import {
   createCanvas,
@@ -14,6 +15,7 @@ import {
 import { seedCanvasFromPrompt, seedCanvasFromSource, type SeedKind } from "@/lib/seed";
 import { createRunCanvas, getLatestRun, loadRun } from "@/lib/bidirectional";
 import { getChatModel } from "@/lib/provider";
+import type { CanvasChatMessage, CanvasGraphView, CanvasOp } from "@/lib/canvas-chat";
 
 const EXPAND_SYSTEM =
   "You expand a node in a visual mind-map. Given a snippet of text and the user's question about " +
@@ -151,6 +153,112 @@ export async function describeCanvasAction(
     return { canvasId };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to build the canvas." };
+  }
+}
+
+const flatOpSchema = z.object({
+  op: z.enum(["add", "connect", "rename", "remove"]),
+  id: z.string().optional(),
+  nodeType: z.enum(["idea", "heading"]).optional(),
+  text: z.string().optional(),
+  source: z.string().optional(),
+  target: z.string().optional(),
+});
+
+const canvasChatSchema = z.object({
+  reply: z.string(),
+  ops: z.array(flatOpSchema).default([]),
+});
+
+const CANVAS_CHAT_SYSTEM =
+  "You are an assistant embedded in a visual concept-map canvas (nodes + edges). You can BOTH answer " +
+  "questions about the board AND edit it. You are given the current nodes (id, type, text) and edges " +
+  "(source id -> target id), then the user's message.\n" +
+  'Respond with: "reply" — a short, helpful answer in plain text; and "ops" — a list of edits to apply ONLY ' +
+  "when the user asks to change the board (for pure questions, return an empty ops array). Op shapes:\n" +
+  '- {"op":"add","id":"<new-id>","nodeType":"idea"|"heading","text":"<label>"} — add a node; pick a fresh id you can reference in connect ops.\n' +
+  '- {"op":"connect","source":"<id>","target":"<id>"} — connect two nodes (existing ids, or ids you added in this response).\n' +
+  '- {"op":"rename","id":"<id>","text":"<new label>"} — change a node\'s text.\n' +
+  '- {"op":"remove","id":"<id>"} — delete a node (its edges go too).\n' +
+  "Use 'heading' for themes/sections and 'idea' for specific points. Keep labels short. Only reference ids " +
+  "that exist or that you add in the same response. Do not restate the whole board.";
+
+function normalizeOps(ops: z.infer<typeof flatOpSchema>[]): CanvasOp[] {
+  const out: CanvasOp[] = [];
+  for (const o of ops) {
+    if (o.op === "add" && o.id && o.text) {
+      out.push({
+        op: "add",
+        id: o.id,
+        nodeType: o.nodeType === "heading" ? "heading" : "idea",
+        text: o.text,
+      });
+    } else if (o.op === "connect" && o.source && o.target) {
+      out.push({ op: "connect", source: o.source, target: o.target });
+    } else if (o.op === "rename" && o.id && o.text) {
+      out.push({ op: "rename", id: o.id, text: o.text });
+    } else if (o.op === "remove" && o.id) {
+      out.push({ op: "remove", id: o.id });
+    }
+  }
+  return out;
+}
+
+/**
+ * Board-aware canvas chat: answers questions about the current graph and returns
+ * edit ops the client applies to the live board. Uses structured output with a
+ * tolerant JSON fallback for models without it.
+ */
+export async function talkToCanvasAction(input: {
+  message: string;
+  graph: CanvasGraphView;
+  history: CanvasChatMessage[];
+}): Promise<{ reply: string; ops: CanvasOp[] } | { error: string }> {
+  const message = input.message.trim();
+  if (!message) {
+    return { error: "Type a message first." };
+  }
+  const resolved = chatModelOrError();
+  if ("error" in resolved) {
+    return resolved;
+  }
+
+  const nodeLines =
+    input.graph.nodes.map((n) => `${n.id} [${n.type}] ${n.text || "(empty)"}`).join("\n") || "(none)";
+  const edgeLines =
+    input.graph.edges.map((e) => `${e.source} -> ${e.target}`).join("\n") || "(none)";
+  const historyText = input.history
+    .slice(-6)
+    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n");
+  const prompt =
+    `NODES:\n${nodeLines}\n\nEDGES:\n${edgeLines}\n\n` +
+    `${historyText ? `Conversation so far:\n${historyText}\n\n` : ""}User: ${message}`;
+
+  try {
+    const { object } = await generateObject({
+      model: resolved.model,
+      schema: canvasChatSchema,
+      system: CANVAS_CHAT_SYSTEM,
+      prompt,
+    });
+    return { reply: object.reply, ops: normalizeOps(object.ops) };
+  } catch {
+    try {
+      const { text } = await generateText({
+        model: resolved.model,
+        system: `${CANVAS_CHAT_SYSTEM}\n\nReturn ONLY a JSON object: {"reply": string, "ops": [...]}.`,
+        prompt,
+      });
+      const match = text.match(/\{[\s\S]*\}/);
+      if (match) {
+        const parsed = canvasChatSchema.parse(JSON.parse(match[0]));
+        return { reply: parsed.reply, ops: normalizeOps(parsed.ops) };
+      }
+      return { reply: text.trim() || "(no response)", ops: [] };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "The model request failed." };
+    }
   }
 }
 

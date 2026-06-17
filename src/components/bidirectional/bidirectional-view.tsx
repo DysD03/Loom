@@ -29,6 +29,7 @@ import type {
   GoalEvent,
   GoalNode,
   ReconcileResult,
+  ToolLogEntry,
 } from "@/lib/bidirectional";
 import type { LoadedRun } from "@/lib/bidirectional";
 import {
@@ -96,6 +97,45 @@ function ToolWindow({
       {running ? <Loader2 className="size-3 animate-spin" /> : <Icon className="size-3" />}
       <span>{label}</span>
     </div>
+  );
+}
+
+function fmtTime(at: string): string {
+  const d = new Date(at);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/** A small, scrollable window of what SearXNG/Firecrawl researched, and when. */
+function ResearchLog({ entries }: { entries: ToolLogEntry[] }) {
+  if (entries.length === 0) return null;
+  return (
+    <details className="border-border/70 bg-card/40 rounded-lg border p-3" open>
+      <summary className="text-muted-foreground flex cursor-pointer items-center gap-2 text-xs font-medium tracking-wide uppercase">
+        <Search className="size-3.5" /> Research log
+        <span className="text-muted-foreground/70 lowercase">· {entries.length} lookups</span>
+      </summary>
+      <ul className="mt-2 max-h-56 space-y-1 overflow-y-auto pr-1">
+        {entries.map((e, i) => (
+          <li key={i} className="flex items-start gap-2 text-[11px]">
+            <span className="text-muted-foreground/70 shrink-0 font-mono">{fmtTime(e.at)}</span>
+            {e.tool === "searxng" ? (
+              <Search className="text-neon-cyan mt-0.5 size-3 shrink-0" />
+            ) : (
+              <Flame className="text-neon-magenta mt-0.5 size-3 shrink-0" />
+            )}
+            <span className={e.status === "error" ? "text-destructive" : "text-foreground/80"}>
+              <span className="text-muted-foreground">
+                {e.tool === "searxng" ? "searched" : "scraped"}
+              </span>{" "}
+              {e.detail}
+              {e.status === "error" ? " (failed)" : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
@@ -200,12 +240,20 @@ function ReconcilePanel({ result }: { result: ReconcileResult }) {
   );
 }
 
-function BridgePanel({ bridge }: { bridge: BridgeResult }) {
+function BridgePanel({ bridge, summary }: { bridge: BridgeResult; summary: string | null }) {
   return (
     <div className="border-neon-green/50 bg-neon-green/5 space-y-3 rounded-lg border p-4 shadow-[0_0_16px_-6px_var(--neon-green)]">
       <div className="text-neon-green flex items-center gap-2 text-sm font-medium tracking-wide uppercase">
         <CheckCircle2 className="size-4" />
         Bridge found · total cost {bridge.totalCost}
+      </div>
+      {summary ? (
+        <p className="text-foreground/90 border-neon-green/20 border-l-2 pl-3 text-sm leading-relaxed">
+          {summary}
+        </p>
+      ) : null}
+      <div className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">
+        Path
       </div>
       <ol className="space-y-1.5">
         {bridge.path.map((step, i) => (
@@ -245,9 +293,11 @@ export function BidirectionalView({
     initialRun?.reconcile ?? null,
   );
   const [bridge, setBridge] = useState<BridgeResult | null>(initialRun?.bridge ?? null);
+  const [summary, setSummary] = useState<string | null>(initialRun?.summary ?? null);
   const [recommendations, setRecommendations] = useState<string[]>(
     initialRun?.recommendations ?? [],
   );
+  const [toolLog, setToolLog] = useState<ToolLogEntry[]>(initialRun?.toolLog ?? []);
   const [round, setRound] = useState<{ index: number; max: number } | null>(null);
   const [error, setError] = useState<string | null>(initialRun?.error ?? null);
   const [isExporting, setIsExporting] = useState(false);
@@ -280,7 +330,9 @@ export function BidirectionalView({
     setBackward(run.backward);
     setReconcile(run.reconcile);
     setBridge(run.bridge);
+    setSummary(run.summary);
     setRecommendations(run.recommendations);
+    setToolLog(run.toolLog);
     setStatus(run.status);
     setError(run.error);
   }, []);
@@ -409,15 +461,29 @@ export function BidirectionalView({
         setBridge(event.bridge);
         freshBridgeRef.current = true;
         break;
+      case "summary":
+        setSummary(event.text);
+        break;
       case "recommendations":
         setRecommendations(event.items);
         break;
-      case "tool":
+      case "tool": {
         setToolState((prev) => ({
           ...prev,
           [event.tool]: { detail: event.detail, status: event.status },
         }));
+        // Log only completed actions ("what was researched when").
+        if (event.status === "done" || event.status === "error") {
+          const entry: ToolLogEntry = {
+            tool: event.tool,
+            detail: event.detail,
+            status: event.status,
+            at: event.at,
+          };
+          setToolLog((prev) => [...prev, entry]);
+        }
         break;
+      }
       case "error":
         setError(event.message);
         setStatus("error");
@@ -437,9 +503,11 @@ export function BidirectionalView({
     setBackward([]);
     setReconcile(null);
     setBridge(null);
+    setSummary(null);
     setRecommendations([]);
     setRound(null);
     setToolState({ searxng: null, firecrawl: null });
+    setToolLog([]);
     setStatus("planning");
     freshBridgeRef.current = false;
 
@@ -689,6 +757,9 @@ export function BidirectionalView({
             </div>
           ) : null}
 
+          {/* Research log — what SearXNG/Firecrawl looked up, and when */}
+          <ResearchLog entries={toolLog} />
+
           {/* Error */}
           {error ? (
             <div className="border-destructive/40 bg-destructive/10 text-destructive flex items-start gap-2 rounded-md border px-3 py-2 text-sm">
@@ -698,7 +769,7 @@ export function BidirectionalView({
           ) : null}
 
           {/* Bridge result */}
-          {bridge ? <BridgePanel bridge={bridge} /> : null}
+          {bridge ? <BridgePanel bridge={bridge} summary={summary} /> : null}
 
           {/* Stopped without a bridge */}
           {!locked && !bridge && status === "stalled" ? (

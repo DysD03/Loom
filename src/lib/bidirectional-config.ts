@@ -46,6 +46,16 @@ export interface ReconcileResult {
   hintToBackward: string;
 }
 
+/** One logged grounding action — a SearXNG search or a Firecrawl scrape. */
+export interface ToolLogEntry {
+  tool: "searxng" | "firecrawl";
+  /** The search query or the scraped URL. */
+  detail: string;
+  status: "done" | "error";
+  /** ISO timestamp of when it completed. */
+  at: string;
+}
+
 /** A completed bridge: the stitched path from START to GOAL. */
 export interface BridgeResult {
   forwardId: string;
