@@ -9,6 +9,7 @@ export async function updateSettings(input: SettingsInput) {
     llmBaseUrl: input.llmBaseUrl.trim(),
     llmApiKey: input.llmApiKey.trim() || "lm-studio",
     llmModel: input.llmModel.trim(),
+    utilityModel: input.utilityModel.trim(),
     embeddingsModel: input.embeddingsModel.trim(),
     anthropicApiKey: input.anthropicApiKey.trim(),
     openaiApiKey: input.openaiApiKey.trim(),

@@ -15,11 +15,16 @@ import { GitBranch, Loader2, ShieldAlert, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { formatRate } from "@/components/chat/token-rate";
 import {
   branchCanvasNodeAction,
   critiqueCanvasNodeAction,
   expandCanvasNodeAction,
 } from "@/app/canvas/actions";
+
+function rateDescription(tokensPerSecond: number | null): string | undefined {
+  return tokensPerSecond ? `~${formatRate(tokensPerSecond)}` : undefined;
+}
 
 export interface CanvasNodeData extends Record<string, unknown> {
   text: string;
@@ -147,7 +152,9 @@ function EditableNode({
       addEdges({ id: crypto.randomUUID(), source: id, target: newId });
       setExpanding(false);
       setQuestion("");
-      toast.success("Added an expansion node");
+      toast.success("Added an expansion node", {
+        description: rateDescription(result.tokensPerSecond),
+      });
     } catch {
       toast.error("Expand failed", { description: "Check the model connection in Settings." });
     } finally {
@@ -190,7 +197,9 @@ function EditableNode({
         return;
       }
       addChildren(result.ideas);
-      toast.success(`Added ${result.ideas.length} child ideas`);
+      toast.success(`Added ${result.ideas.length} child ideas`, {
+        description: rateDescription(result.tokensPerSecond),
+      });
     } catch {
       toast.error("Branch failed", { description: "Check the model connection in Settings." });
     } finally {
@@ -222,7 +231,9 @@ function EditableNode({
         data: { text: result.text },
       });
       addEdges({ id: crypto.randomUUID(), source: id, target: newId });
-      toast.success("Added a critique node");
+      toast.success("Added a critique node", {
+        description: rateDescription(result.tokensPerSecond),
+      });
     } catch {
       toast.error("Critique failed", { description: "Check the model connection in Settings." });
     } finally {

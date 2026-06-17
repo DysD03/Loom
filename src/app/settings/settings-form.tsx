@@ -149,6 +149,14 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
             onChange={setField("llmModel")}
           />
           <Field
+            id="utilityModel"
+            label="Utility model"
+            hint="Optional small, fast model for background tasks (memory extraction, canvas building, suggestions). Cloud models work too (e.g. anthropic/claude-haiku-4-5). Empty = use the chat model."
+            placeholder="qwen2.5-3b-instruct"
+            value={form.utilityModel}
+            onChange={setField("utilityModel")}
+          />
+          <Field
             id="embeddingsModel"
             label="Embeddings model"
             hint="Used by Memory for vector search. Can match the chat model if it supports embeddings."

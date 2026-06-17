@@ -15,8 +15,19 @@ import { DefaultChatTransport, type UIMessage } from "ai";
  *
  * Instances live for the lifetime of the browser session. A full page reload
  * clears the map, and the view re-seeds from the DB-backed `initialMessages`.
+ *
+ * Pinned on globalThis because dev-mode Fast Refresh re-evaluates this module
+ * (e.g. when a lib file in its import chain is edited), which would reset a
+ * plain module-level map and orphan an in-flight stream — the streamed reply
+ * then never shows until the next send. Same pattern as `lib/mcp.ts`.
  */
-const registry = new Map<string, Chat<UIMessage>>();
+const g = globalThis as typeof globalThis & {
+  __loomChatRegistry?: Map<string, Chat<UIMessage>>;
+};
+if (!g.__loomChatRegistry) {
+  g.__loomChatRegistry = new Map();
+}
+const registry = g.__loomChatRegistry;
 
 export function getChatInstance(opts: {
   id: string;

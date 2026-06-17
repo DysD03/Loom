@@ -10,6 +10,8 @@ export const appSettings = sqliteTable("app_settings", {
   llmBaseUrl: text("llm_base_url").notNull().default("http://localhost:1234/v1"),
   llmApiKey: text("llm_api_key").notNull().default("lm-studio"),
   llmModel: text("llm_model").notNull().default(""),
+  /** Small model for background tasks (titles, memory extraction, canvas seeding, suggestions). Empty = use llmModel. */
+  utilityModel: text("utility_model").notNull().default(""),
   embeddingsModel: text("embeddings_model").notNull().default(""),
   /** Cloud provider API keys. Empty string means that provider is not configured. */
   anthropicApiKey: text("anthropic_api_key").notNull().default(""),
@@ -24,11 +26,11 @@ export const appSettings = sqliteTable("app_settings", {
 export type AppSettings = typeof appSettings.$inferSelect;
 export type AppSettingsInsert = typeof appSettings.$inferInsert;
 
-/** A conversation thread. `type` distinguishes Chat / Agents / Deep Research surfaces. */
+/** A conversation thread. `type` distinguishes Chat / Agents / Deep Research / Experimental surfaces. */
 export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),
   title: text("title").notNull().default("New chat"),
-  type: text("type", { enum: ["chat", "agent", "research"] })
+  type: text("type", { enum: ["chat", "agent", "research", "experimental"] })
     .notNull()
     .default("chat"),
   /** Per-conversation model override; null means fall back to global settings. */
@@ -178,6 +180,55 @@ export const researchReports = sqliteTable(
 
 export type ResearchReport = typeof researchReports.$inferSelect;
 export type ResearchStatus = ResearchReport["status"];
+
+/**
+ * A Bidirectional Goal-Convergence run (the Experimental Agent surface). A
+ * forward agent builds from the start state, a backward agent regresses from the
+ * goal, and a reconciler detects when the two frontiers meet. The evolving
+ * frontiers, the reconciler's latest verdict, and the stitched bridge (once
+ * found) are persisted as JSON so a run can be reloaded. Belongs to an
+ * `experimental`-type conversation; the newest run is shown.
+ */
+export const goalRuns = sqliteTable(
+  "goal_runs",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    /** Domain framing + shared glossary fed to every agent. */
+    problemSpec: text("problem_spec").notNull().default(""),
+    startState: text("start_state").notNull().default(""),
+    goalState: text("goal_state").notNull().default(""),
+    /** JSON-encoded GoalNode[] — the forward frontier (root F0). */
+    forwardNodes: text("forward_nodes"),
+    /** JSON-encoded GoalNode[] — the backward frontier (root GOAL). */
+    backwardNodes: text("backward_nodes"),
+    /** JSON-encoded ReconcileResult — the reconciler's latest verdict + hints. */
+    reconcile: text("reconcile"),
+    /** JSON-encoded BridgeResult — the stitched START→…→GOAL path, once found. */
+    bridge: text("bridge"),
+    /** Cap on search→reconcile rounds for this run. */
+    maxRounds: integer("max_rounds").notNull().default(6),
+    status: text("status", {
+      enum: ["planning", "expanding", "reconciling", "done", "stalled", "error"],
+    })
+      .notNull()
+      .default("planning"),
+    /** Populated when status is "error". */
+    error: text("error"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+  },
+  (t) => [index("goal_runs_conversation_idx").on(t.conversationId, t.createdAt)],
+);
+
+export type GoalRun = typeof goalRuns.$inferSelect;
+export type GoalStatus = GoalRun["status"];
 
 /**
  * A Canvas board — a React Flow graph of idea/heading nodes and their edges,

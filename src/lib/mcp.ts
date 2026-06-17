@@ -38,17 +38,29 @@ interface Connection {
 }
 
 /** How long a failed server is left alone before chat/agent requests retry it. */
-const ERROR_RETRY_MS = 30_000;
+const ERROR_RETRY_MS = 180_000;
+
+/**
+ * How long tool resolution waits for a cold server before streaming without it.
+ * The connect keeps running in the background and is picked up next request,
+ * so a slow server costs one degraded message instead of blocking every one.
+ */
+const CONNECT_BUDGET_MS = 2_000;
 
 // Global singleton so connections survive hot-reload in dev
 const g = globalThis as typeof globalThis & {
   __mcpConnections?: Map<string, Connection>;
+  __mcpPending?: Map<string, Promise<Connection>>;
   __mcpSyncState?: { stamp: number; result: { error?: string } };
 };
 if (!g.__mcpConnections) {
   g.__mcpConnections = new Map();
 }
+if (!g.__mcpPending) {
+  g.__mcpPending = new Map();
+}
 const connections = g.__mcpConnections;
+const pending = g.__mcpPending;
 
 export async function connectServer(server: McpServer): Promise<Connection> {
   const existing = connections.get(server.id);
@@ -62,6 +74,17 @@ export async function connectServer(server: McpServer): Promise<Connection> {
     return existing;
   }
 
+  // Concurrent requests (chat + suggestions, double sends) share one attempt
+  // instead of spawning duplicate processes/sockets per request.
+  const inFlight = pending.get(server.id);
+  if (inFlight) return inFlight;
+
+  const attempt = doConnect(server).finally(() => pending.delete(server.id));
+  pending.set(server.id, attempt);
+  return attempt;
+}
+
+async function doConnect(server: McpServer): Promise<Connection> {
   const client = new Client({ name: "loom", version: "1.0.0" });
 
   try {
@@ -85,6 +108,13 @@ export async function connectServer(server: McpServer): Promise<Connection> {
 
     const { tools } = await client.listTools();
     const conn: Connection = { client, tools, status: "connected" };
+    // Self-evict when the server dies so a stale "connected" entry can't shadow
+    // a reconnect. Guard against evicting a newer connection for the same id.
+    client.onclose = () => {
+      if (connections.get(server.id)?.client === client) {
+        connections.delete(server.id);
+      }
+    };
     connections.set(server.id, conn);
     return conn;
   } catch (err) {
@@ -202,6 +232,14 @@ function reconcileMcpServers(): { error?: string } {
   return {};
 }
 
+/** Resolves to `null` when the promise outlasts `ms`; the promise keeps running. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(resolve, ms)),
+  ]);
+}
+
 /** Returns all tools from all enabled + connected servers. */
 export async function getAllMcpTools(): Promise<McpToolWithServer[]> {
   try {
@@ -216,14 +254,18 @@ export async function getAllMcpTools(): Promise<McpToolWithServer[]> {
     .where(eq(mcpServers.enabled, true))
     .all();
 
-  // Connect in parallel so one slow/cold server doesn't delay the others.
-  const conns = await Promise.all(servers.map((server) => connectServer(server)));
+  // Connect in parallel, each capped at the connect budget: a cold or dead
+  // server (e.g. an unreachable SSH host with a ~20s OS timeout) is dropped
+  // from this request while its connect finishes in the background.
+  const conns = await Promise.all(
+    servers.map((server) => withTimeout(connectServer(server), CONNECT_BUDGET_MS)),
+  );
 
   const result: McpToolWithServer[] = [];
   for (let i = 0; i < servers.length; i++) {
     const server = servers[i];
     const conn = conns[i];
-    if (conn.status === "connected") {
+    if (conn?.status === "connected") {
       for (const tool of conn.tools) {
         result.push({ ...tool, serverId: server.id, serverName: server.name });
       }

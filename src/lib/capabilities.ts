@@ -1,6 +1,7 @@
 import "server-only";
 
 import { parseModel } from "./models";
+import { configuredCloudProviders } from "./provider";
 import { getSettings } from "./settings";
 
 export interface ToolSupport {
@@ -42,7 +43,7 @@ export async function checkToolSupport(
 ): Promise<ToolSupport> {
   const settings = getSettings();
   const raw = (modelOverride && modelOverride.trim()) || settings.llmModel.trim();
-  const { provider, modelId: model } = parseModel(raw);
+  const { provider, modelId: model } = parseModel(raw, configuredCloudProviders(settings));
 
   if (!model) {
     return {

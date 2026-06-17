@@ -16,6 +16,7 @@ import { Markdown } from "@/components/markdown";
 import { CopyButton } from "@/components/copy-button";
 import { ModelSelect } from "@/components/chat/model-select";
 import { ContextMeter } from "@/components/chat/context-meter";
+import { TokenRate, generatedTokens } from "@/components/chat/token-rate";
 import { extractMemoriesAction } from "@/app/memory/actions";
 import { sendToCanvasAction } from "@/app/canvas/actions";
 import { SendToOpencodeButton } from "@/components/opencode/send-button";
@@ -311,6 +312,10 @@ export function ChatView({
         <h1 className="truncate text-base font-semibold">{title}</h1>
         <div className="flex items-center gap-2">
           {headerActions}
+          <TokenRate
+            tokens={generatedTokens(messages[messages.length - 1])}
+            active={status === "streaming"}
+          />
           <ContextMeter messages={messages} model={model} />
           <ModelSelect conversationId={conversationId} current={model} type={type} />
           <Button variant="outline" size="sm" onClick={handleExtract} disabled={isExtracting}>

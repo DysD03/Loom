@@ -6,7 +6,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { EmbeddingModel, LanguageModel, UIMessage } from "ai";
 
-import { type CloudProvider, parseModel } from "./models";
+import { CLOUD_PROVIDERS, type CloudProvider, parseModel } from "./models";
 import { getSettings } from "./settings";
 import type { AppSettings } from "@/db/schema";
 
@@ -19,20 +19,30 @@ function localProvider(settings: AppSettings) {
   });
 }
 
-/** Reads the API key for a cloud provider; throws a clear error when it is missing. */
-function cloudApiKey(settings: AppSettings, provider: CloudProvider): string {
+function rawCloudKey(settings: AppSettings, provider: CloudProvider): string {
   const key =
     provider === "anthropic"
       ? settings.anthropicApiKey
       : provider === "openai"
         ? settings.openaiApiKey
         : settings.googleApiKey;
-  if (!key.trim()) {
+  return key.trim();
+}
+
+/** Cloud providers that have an API key configured (and so can be routed to). */
+export function configuredCloudProviders(settings: AppSettings): CloudProvider[] {
+  return CLOUD_PROVIDERS.filter((provider) => rawCloudKey(settings, provider) !== "");
+}
+
+/** Reads the API key for a cloud provider; throws a clear error when it is missing. */
+function cloudApiKey(settings: AppSettings, provider: CloudProvider): string {
+  const key = rawCloudKey(settings, provider);
+  if (!key) {
     throw new Error(
       `No API key configured for ${provider}. Add one in Settings → Cloud providers.`,
     );
   }
-  return key.trim();
+  return key;
 }
 
 /** Builds a cloud chat model for the given provider + bare model id. */
@@ -60,13 +70,25 @@ function cloudChatModel(
 export function getChatModel(modelOverride?: string | null) {
   const settings = getSettings();
   const raw = (modelOverride && modelOverride.trim()) || settings.llmModel.trim();
-  const { provider, modelId } = parseModel(raw);
+  const { provider, modelId } = parseModel(raw, configuredCloudProviders(settings));
 
   if (provider === "local") {
     return { model: localProvider(settings).chatModel(modelId), modelId };
   }
 
   return { model: cloudChatModel(settings, provider, modelId), modelId };
+}
+
+/**
+ * Builds the model for background tasks (titles, memory extraction, canvas
+ * seeding, suggestions). Uses the Settings utility model when set — typically a
+ * small fast model — otherwise falls back like `getChatModel` (the caller's
+ * override, then the global chat model).
+ */
+export function getUtilityModel(fallbackOverride?: string | null) {
+  const settings = getSettings();
+  const utility = settings.utilityModel.trim();
+  return getChatModel(utility || fallbackOverride);
 }
 
 /**

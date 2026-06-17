@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Markdown } from "@/components/markdown";
+import { TokenRate, generatedTokens } from "@/components/chat/token-rate";
 import { getChatInstance } from "@/lib/chat-store";
 import {
   assistEditorAction,
@@ -293,6 +294,10 @@ function DocChat({
     <div className="bg-sidebar/30 flex h-full w-80 shrink-0 flex-col border-l xl:w-96">
       <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b px-4">
         <span className="text-sm font-semibold">Assistant</span>
+        <TokenRate
+          tokens={generatedTokens(messages[messages.length - 1])}
+          active={status === "streaming"}
+        />
         <Button
           variant="outline"
           size="sm"

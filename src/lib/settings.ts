@@ -13,6 +13,7 @@ export type SettingsInput = Pick<
   | "llmBaseUrl"
   | "llmApiKey"
   | "llmModel"
+  | "utilityModel"
   | "embeddingsModel"
   | "anthropicApiKey"
   | "openaiApiKey"

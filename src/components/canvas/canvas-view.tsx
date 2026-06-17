@@ -15,12 +15,15 @@ import {
   useReactFlow,
   ConnectionMode,
   MarkerType,
+  getNodesBounds,
+  getViewportForBounds,
   type Connection,
   type Edge,
   type Node,
 } from "@xyflow/react";
 import dagre from "dagre";
-import { Heading, LayoutGrid, Maximize, StickyNote } from "lucide-react";
+import { toPng } from "html-to-image";
+import { Heading, ImageDown, LayoutGrid, Maximize, StickyNote } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { nodeTypes, type CanvasNode } from "@/components/canvas/nodes";
@@ -80,16 +83,19 @@ function autoLayout(nodes: Node[], edges: Edge[]): Node[] {
 
 function Board({
   canvasId,
+  title,
   initialNodes,
   initialEdges,
 }: {
   canvasId: string;
+  title: string;
   initialNodes: Node[];
   initialEdges: Edge[];
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(normalizeEdges(initialEdges));
   const [saved, setSaved] = useState(true);
+  const [exporting, setExporting] = useState(false);
   const { screenToFlowPosition, fitView } = useReactFlow();
   const firstRun = useRef(true);
   const addCount = useRef(0);
@@ -137,6 +143,40 @@ function Board({
     window.requestAnimationFrame(() => fitView({ duration: 400, padding: 0.2 }));
   }, [edges, fitView, setNodes]);
 
+  const onExport = useCallback(async () => {
+    // Render the flow viewport (nodes + edges only — controls/minimap live
+    // outside it) framed to the graph's bounds, regardless of current zoom/pan.
+    const viewport = document.querySelector<HTMLElement>(".react-flow__viewport");
+    if (!viewport || nodes.length === 0) return;
+    setExporting(true);
+    try {
+      const bounds = getNodesBounds(nodes);
+      const width = Math.max(Math.ceil(bounds.width) + 120, 640);
+      const height = Math.max(Math.ceil(bounds.height) + 120, 480);
+      const view = getViewportForBounds(bounds, width, height, 0.5, 2, 0.08);
+      const background =
+        getComputedStyle(document.documentElement).getPropertyValue("--background").trim() ||
+        "#0b0b12";
+      const dataUrl = await toPng(viewport, {
+        backgroundColor: background,
+        width,
+        height,
+        pixelRatio: 2,
+        style: {
+          width: `${width}px`,
+          height: `${height}px`,
+          transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`,
+        },
+      });
+      const link = document.createElement("a");
+      link.download = `${title.replace(/[^\w-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "canvas"}.png`;
+      link.href = dataUrl;
+      link.click();
+    } finally {
+      setExporting(false);
+    }
+  }, [nodes, title]);
+
   return (
     <ReactFlow
       nodes={nodes}
@@ -182,6 +222,14 @@ function Board({
         </Button>
         <Button
           size="sm"
+          variant="outline"
+          onClick={onExport}
+          disabled={exporting || nodes.length === 0}
+        >
+          <ImageDown className="size-4" /> {exporting ? "Exporting…" : "Export"}
+        </Button>
+        <Button
+          size="sm"
           variant="ghost"
           onClick={() => fitView({ duration: 400, padding: 0.2 })}
           aria-label="Fit view"
@@ -220,7 +268,12 @@ export function CanvasView({
       </header>
       <div className="relative min-h-0 flex-1">
         <ReactFlowProvider>
-          <Board canvasId={canvasId} initialNodes={initialNodes} initialEdges={initialEdges} />
+          <Board
+            canvasId={canvasId}
+            title={title}
+            initialNodes={initialNodes}
+            initialEdges={initialEdges}
+          />
         </ReactFlowProvider>
       </div>
     </div>

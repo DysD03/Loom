@@ -6,6 +6,7 @@ import {
   createConversation,
   deleteConversation,
   renameConversation,
+  setChatTools,
   setConversationModel,
 } from "@/lib/conversations";
 import type { ConversationType } from "@/db/schema";
@@ -15,6 +16,7 @@ const SURFACE_PATH: Record<ConversationType, string> = {
   chat: "/",
   agent: "/agents",
   research: "/research",
+  experimental: "/experimental",
 };
 
 export async function newConversationAction(
@@ -40,6 +42,12 @@ export async function renameConversationAction(
 ): Promise<void> {
   renameConversation(id, title);
   revalidatePath(SURFACE_PATH[type]);
+}
+
+/** Persists the enabled tool keys for a Chat conversation (null/empty = lean, no tools). */
+export async function setChatToolsAction(id: string, tools: string[] | null): Promise<void> {
+  setChatTools(id, tools);
+  revalidatePath("/");
 }
 
 export async function setConversationModelAction(

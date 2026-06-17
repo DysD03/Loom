@@ -28,14 +28,29 @@ const PREFIXES: Record<CloudProvider, string> = {
   google: "google/",
 };
 
-/** Splits a stored model string into its provider and bare id. */
-export function parseModel(value: string): ParsedModel {
+/**
+ * Splits a stored model string into its provider and bare id.
+ *
+ * Local model ids can legitimately carry a publisher prefix that collides with
+ * our cloud prefixes (LM Studio's "google/gemma-3-12b"), so a prefix routes to
+ * the cloud only when that provider is in `configuredClouds` (it has an API key)
+ * or the id is one of our curated cloud models — otherwise the whole string is
+ * treated as a local id.
+ */
+export function parseModel(
+  value: string,
+  configuredClouds: readonly CloudProvider[] = CLOUD_PROVIDERS,
+): ParsedModel {
   const trimmed = value.trim();
   for (const provider of CLOUD_PROVIDERS) {
     const prefix = PREFIXES[provider];
-    if (trimmed.startsWith(prefix)) {
+    if (!trimmed.startsWith(prefix)) {
+      continue;
+    }
+    if (configuredClouds.includes(provider) || isCuratedCloudId(trimmed)) {
       return { provider, modelId: trimmed.slice(prefix.length) };
     }
+    break;
   }
   return { provider: "local", modelId: trimmed };
 }
@@ -95,6 +110,14 @@ export const CLOUD_CATALOG: ProviderCatalog[] = [
     ],
   },
 ];
+
+const CURATED_IDS = new Set(CLOUD_CATALOG.flatMap((group) => group.models.map((m) => m.id)));
+
+/** True when the id is one of the curated cloud picks — always cloud, even keyless,
+ * so the user gets a clear "add an API key" error instead of a local 404. */
+function isCuratedCloudId(id: string): boolean {
+  return CURATED_IDS.has(id);
+}
 
 export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   local: "Local",

@@ -6,7 +6,7 @@ import { z } from "zod";
 import dagre from "dagre";
 import type { Edge, Node } from "@xyflow/react";
 
-import { getChatModel } from "./provider";
+import { getUtilityModel } from "./provider";
 import { getConversation, getMessages } from "./conversations";
 import { createCanvas, renameCanvas, saveCanvasGraph, type CanvasGraph } from "./canvas";
 import { getLatestReport } from "./research";
@@ -38,16 +38,27 @@ const SYSTEM =
   "that relate to each other. Keep node text short. Aim for 6–16 nodes total. Every edge must " +
   "reference node ids that exist. Capture the substance of the session, not the chit-chat.";
 
+const DESCRIBE_SYSTEM =
+  "You design a concept map (a graph of nodes and edges) from the user's description of what they " +
+  "want to map out. Use 'heading' nodes for the main themes or sections, and 'idea' nodes for " +
+  "specific points, steps, claims, or facts under them. Connect each heading to its related ideas, " +
+  "and link ideas that relate to each other. Keep node text short. Aim for 6–16 nodes total. Every " +
+  "edge must reference node ids that exist. Fill in useful substance the user implied but did not " +
+  "spell out — the map should be a helpful starting point, not an empty skeleton.";
+
 /** Asks the model for a graph; falls back to tolerant JSON parsing if structured output fails. */
-async function extractGraph(model: LanguageModel, content: string): Promise<RawGraph> {
-  const prompt = `Here is the session to map:\n\n${content.slice(0, MAX_CONTENT_CHARS)}`;
+async function extractGraph(
+  model: LanguageModel,
+  system: string,
+  prompt: string,
+): Promise<RawGraph> {
   try {
-    const { object } = await generateObject({ model, schema: graphSchema, system: SYSTEM, prompt });
+    const { object } = await generateObject({ model, schema: graphSchema, system, prompt });
     return object;
   } catch {
     const { text } = await generateText({
       model,
-      system: `${SYSTEM}\n\nReturn ONLY a JSON object: {"title":string,"nodes":[{"id":string,"type":"heading"|"idea","text":string}],"edges":[{"source":string,"target":string}]}`,
+      system: `${system}\n\nReturn ONLY a JSON object: {"title":string,"nodes":[{"id":string,"type":"heading"|"idea","text":string}],"edges":[{"source":string,"target":string}]}`,
       prompt,
     });
     const match = text.match(/\{[\s\S]*\}/);
@@ -136,10 +147,37 @@ export async function seedCanvasFromSource(sourceId: string, kind: SeedKind): Pr
     fallbackTitle = conversation.title;
   }
 
-  const { model, modelId } = getChatModel(conversation.model);
+  const { model, modelId } = getUtilityModel(conversation.model);
   if (!modelId) throw new Error("No model configured. Set a model in Settings.");
 
-  const raw = await extractGraph(model, content);
+  const raw = await extractGraph(
+    model,
+    SYSTEM,
+    `Here is the session to map:\n\n${content.slice(0, MAX_CONTENT_CHARS)}`,
+  );
+  return persistGraph(raw, fallbackTitle);
+}
+
+/**
+ * Builds a concept-map canvas from a free-form description of what the user
+ * wants to map, persists it, and returns the new canvas id.
+ */
+export async function seedCanvasFromPrompt(description: string): Promise<string> {
+  const trimmed = description.trim();
+  if (!trimmed) throw new Error("Describe the canvas you want first.");
+
+  const { model, modelId } = getUtilityModel();
+  if (!modelId) throw new Error("No model configured. Set a model in Settings.");
+
+  const raw = await extractGraph(
+    model,
+    DESCRIBE_SYSTEM,
+    `Build a concept map from this description:\n\n${trimmed.slice(0, MAX_CONTENT_CHARS)}`,
+  );
+  return persistGraph(raw, trimmed.slice(0, 60));
+}
+
+function persistGraph(raw: RawGraph, fallbackTitle: string): string {
   const graph = toCanvasGraph(raw);
   if (graph.nodes.length === 0) throw new Error("The model produced an empty map.");
 

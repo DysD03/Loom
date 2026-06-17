@@ -1,0 +1,1 @@
+ALTER TABLE `app_settings` ADD `utility_model` text DEFAULT '' NOT NULL;

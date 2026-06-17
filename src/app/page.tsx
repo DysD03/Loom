@@ -2,7 +2,9 @@ import { MessageSquarePlus } from "lucide-react";
 
 import { ConversationList } from "@/components/chat/conversation-list";
 import { ChatView } from "@/components/chat/chat-view";
+import { ChatTools } from "@/components/chat/tools";
 import {
+  getChatTools,
   getConversation,
   getMessages,
   listConversations,
@@ -38,6 +40,9 @@ export default async function ChatPage({
           title={activeChat.title}
           model={activeChat.model}
           initialMessages={initialMessages}
+          headerActions={
+            <ChatTools conversationId={activeChat.id} enabledKeys={getChatTools(activeChat.id)} />
+          }
         />
       ) : (
         <div className="animate-fade-in-up flex flex-1 flex-col items-center justify-center gap-5 text-center">

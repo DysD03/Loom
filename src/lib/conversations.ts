@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import type { UIMessage } from "ai";
 
 import { db } from "@/db/client";
@@ -128,19 +128,43 @@ function parseSelfDialogue(raw: string | null): SelfDialogueConfig {
   }
 }
 
+function parseToolKeys(raw: string | null | undefined): string[] | null {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((t): t is string => typeof t === "string");
+    }
+  } catch {
+    // Corrupt JSON falls back to the surface's default (agents: all; chat: none).
+  }
+  return null;
+}
+
+/**
+ * Enabled tool keys for a plain Chat conversation, stored in the shared
+ * `agent_tools` column. Unlike agents, `null` means **no tools** — chat
+ * defaults to lean so local models aren't taxed with ~70 tool definitions.
+ */
+export function getChatTools(id: string): string[] | null {
+  return parseToolKeys(getConversation(id)?.agentTools);
+}
+
+export function setChatTools(id: string, tools: string[] | null): void {
+  db.update(conversations)
+    .set({
+      agentTools: tools && tools.length ? JSON.stringify(tools) : null,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(conversations.id, id))
+    .run();
+}
+
 export function getAgentConfig(id: string): AgentConfig {
   const convo = getConversation(id);
-  let tools: string[] | null = null;
-  if (convo?.agentTools) {
-    try {
-      const parsed = JSON.parse(convo.agentTools) as unknown;
-      if (Array.isArray(parsed)) {
-        tools = parsed.filter((t): t is string => typeof t === "string");
-      }
-    } catch {
-      // Corrupt JSON falls back to "all tools".
-    }
-  }
+  const tools = parseToolKeys(convo?.agentTools);
   return {
     maxSteps: convo?.agentMaxSteps ?? null,
     tools,
@@ -233,11 +257,14 @@ function maybeSetTitleFromContent(id: string, content: string): void {
 }
 
 export function getMessages(conversationId: string): Message[] {
+  // created_at has second precision, so a user+assistant pair written within
+  // the same second ties; rowid (insertion order) breaks the tie — the random
+  // UUID id would shuffle them.
   return db
     .select()
     .from(messages)
     .where(eq(messages.conversationId, conversationId))
-    .orderBy(messages.createdAt, messages.id)
+    .orderBy(messages.createdAt, sql`rowid`)
     .all();
 }
 

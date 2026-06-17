@@ -9,18 +9,21 @@ import type { ConversationType } from "@/db/schema";
 import type { Suggestion } from "@/lib/suggestions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { formatRate } from "@/components/chat/token-rate";
 import { generateSuggestionsAction, launchSuggestionAction } from "@/app/memory/actions";
 
 const SURFACE_LABEL: Record<ConversationType, string> = {
   chat: "Chat",
   agent: "Agent",
   research: "Research",
+  experimental: "Experimental",
 };
 
 export function Suggestions({ hasMemories }: { hasMemories: boolean }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
+  const [rate, setRate] = useState<number | null>(null);
   const [launching, setLaunching] = useState<number | null>(null);
 
   async function generate() {
@@ -32,6 +35,7 @@ export function Suggestions({ hasMemories }: { hasMemories: boolean }) {
         return;
       }
       setSuggestions(result.suggestions);
+      setRate(result.tokensPerSecond);
       if (result.suggestions.length === 0) {
         toast.info("No suggestions came back — try adding a few more memories.");
       }
@@ -61,6 +65,14 @@ export function Suggestions({ hasMemories }: { hasMemories: boolean }) {
         <span className="flex items-center gap-2 text-sm font-medium">
           <Lightbulb className="text-neon-yellow size-4" />
           Suggestions for you
+          {rate ? (
+            <span
+              className="text-muted-foreground text-[11px] font-normal tabular-nums"
+              title="Average generation speed of the last run"
+            >
+              ~{formatRate(rate)}
+            </span>
+          ) : null}
         </span>
         <Button
           size="sm"

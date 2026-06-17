@@ -13,6 +13,7 @@ import {
   SquareTerminal,
   Library,
   NotebookPen,
+  FlaskConical,
   type LucideIcon,
 } from "lucide-react";
 
@@ -28,6 +29,7 @@ const primaryItems: NavItem[] = [
   { href: "/", label: "Chat", icon: MessageSquare },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/research", label: "Deep Research", icon: Telescope },
+  { href: "/experimental", label: "Experimental Agent", icon: FlaskConical },
   { href: "/canvas", label: "Canvas", icon: Workflow },
   { href: "/opencode", label: "OpenCode", icon: SquareTerminal },
   { href: "/editor", label: "Editor", icon: NotebookPen },

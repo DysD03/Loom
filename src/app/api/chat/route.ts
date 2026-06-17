@@ -7,9 +7,18 @@ import {
 } from "ai";
 
 import { getChatModel, textFromUIMessage } from "@/lib/provider";
-import { addMessage, getConversation } from "@/lib/conversations";
-import { embedText, formatMemoriesForPrompt, retrieveRelevantMemories } from "@/lib/memory";
-import { formatChunksForPrompt, retrieveRelevantChunks } from "@/lib/documents";
+import { addMessage, getChatTools, getConversation } from "@/lib/conversations";
+import {
+  embedText,
+  formatMemoriesForPrompt,
+  hasMemories,
+  retrieveRelevantMemories,
+} from "@/lib/memory";
+import {
+  formatChunksForPrompt,
+  hasReadyDocuments,
+  retrieveRelevantChunks,
+} from "@/lib/documents";
 import { buildRetrievalInfo } from "@/lib/transparency";
 import { RETRIEVAL_PART_TYPE } from "@/lib/retrieval";
 import { buildToolRegistry, stepCountIs } from "@/lib/tools";
@@ -74,9 +83,19 @@ export async function POST(request: Request) {
 
   // Everything before streaming is best-effort and latency-critical: build the
   // tool registry while the query is embedded once (shared by memory + document
-  // retrieval), then run both retrievals concurrently.
-  const toolsPromise = buildToolRegistry().catch(() => undefined);
-  const queryEmbedding = queryText ? await embedText(queryText).catch(() => null) : null;
+  // retrieval), then run both retrievals concurrently. Skip the embedding call
+  // entirely when there is nothing to retrieve against — otherwise it forces
+  // LM Studio to JIT-load the embedding model before every chat completion.
+  //
+  // Chat is lean by default: tools (and their MCP connects) are skipped unless
+  // the user enabled some for this conversation — sending ~70 tool definitions
+  // with every message taxes local models and degrades answers.
+  const enabledToolKeys = getChatTools(conversationId);
+  const toolsPromise = enabledToolKeys?.length
+    ? buildToolRegistry(enabledToolKeys).catch(() => undefined)
+    : Promise.resolve(undefined);
+  const wantsRetrieval = Boolean(queryText) && (hasMemories() || hasReadyDocuments());
+  const queryEmbedding = wantsRetrieval ? await embedText(queryText).catch(() => null) : null;
   const [memoriesUsed, chunksUsed] = await Promise.all([
     retrieveRelevantMemories(queryText, undefined, queryEmbedding).catch(() => []),
     retrieveRelevantChunks(queryText, undefined, queryEmbedding).catch(() => []),

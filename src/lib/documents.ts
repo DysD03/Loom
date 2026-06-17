@@ -318,6 +318,14 @@ function readyCorpus(): CorpusChunk[] {
   return out;
 }
 
+/** Cheap existence check so callers can skip query embedding when there is nothing to retrieve. */
+export function hasReadyDocuments(): boolean {
+  return (
+    db.select({ id: documents.id }).from(documents).where(eq(documents.status, "ready")).get() !==
+    undefined
+  );
+}
+
 /**
  * Retrieves the most relevant document chunks for a query via cosine similarity.
  * Returns [] when there are no documents, no query, or no embeddings model.
@@ -333,10 +341,7 @@ export async function retrieveRelevantChunks(
   if (!trimmed || queryEmbedding === null) {
     return [];
   }
-  const hasDocs =
-    db.select({ id: documents.id }).from(documents).where(eq(documents.status, "ready")).get() !==
-    undefined;
-  if (!hasDocs) {
+  if (!hasReadyDocuments()) {
     return [];
   }
 

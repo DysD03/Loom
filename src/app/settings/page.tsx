@@ -30,6 +30,7 @@ export default function SettingsPage() {
               llmBaseUrl: settings.llmBaseUrl,
               llmApiKey: settings.llmApiKey,
               llmModel: settings.llmModel,
+              utilityModel: settings.utilityModel,
               embeddingsModel: settings.embeddingsModel,
               anthropicApiKey: settings.anthropicApiKey,
               openaiApiKey: settings.openaiApiKey,

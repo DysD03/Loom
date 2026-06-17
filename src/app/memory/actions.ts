@@ -11,12 +11,13 @@ import {
   updateMemory,
 } from "@/lib/memory";
 import { createConversation, renameConversation } from "@/lib/conversations";
-import { generateSuggestions, type Suggestion } from "@/lib/suggestions";
+import { generateSuggestions, type SuggestionRun } from "@/lib/suggestions";
 
 const SURFACE_PATH: Record<ConversationType, string> = {
   chat: "/",
   agent: "/agents",
   research: "/research",
+  experimental: "/experimental",
 };
 
 export async function addMemoryAction(content: string, type: MemoryType): Promise<void> {
@@ -61,11 +62,9 @@ export async function extractMemoriesAction(
 }
 
 /** Generates personalized session suggestions from stored memories. */
-export async function generateSuggestionsAction(): Promise<
-  { suggestions: Suggestion[] } | { error: string }
-> {
+export async function generateSuggestionsAction(): Promise<SuggestionRun | { error: string }> {
   try {
-    return { suggestions: await generateSuggestions() };
+    return await generateSuggestions();
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to generate suggestions." };
   }

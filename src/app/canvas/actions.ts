@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
-import { generateText } from "ai";
+import { generateText, type LanguageModel } from "ai";
 
 import {
   createCanvas,
@@ -11,7 +11,7 @@ import {
   saveCanvasGraph,
   type CanvasGraph,
 } from "@/lib/canvas";
-import { seedCanvasFromSource, type SeedKind } from "@/lib/seed";
+import { seedCanvasFromPrompt, seedCanvasFromSource, type SeedKind } from "@/lib/seed";
 import { getChatModel } from "@/lib/provider";
 
 const EXPAND_SYSTEM =
@@ -28,6 +28,33 @@ const CRITIQUE_SYSTEM =
   "You critique a node in a visual mind-map. Given the node's text, point out the most important " +
   "gaps, risks, counterpoints, or unstated assumptions — a concise bullet list (3-5 bullets), " +
   "no preamble. Be specific and constructive.";
+
+/** Resolves the default chat model, returning config problems as a user-facing error. */
+function chatModelOrError(): { model: LanguageModel } | { error: string } {
+  try {
+    const { model, modelId } = getChatModel();
+    if (!modelId) {
+      return { error: "No model configured. Set a model in Settings." };
+    }
+    return { model };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to build the model." };
+  }
+}
+
+/**
+ * Average generation speed over a whole non-streaming call. Wall time includes
+ * prompt processing, so this reads a bit lower than the live streaming rate.
+ */
+function tokensPerSecond(
+  outputTokens: number | undefined,
+  text: string,
+  startedAt: number,
+): number | null {
+  const seconds = (Date.now() - startedAt) / 1000;
+  const tokens = outputTokens ?? Math.ceil(text.length / 4);
+  return seconds > 0 && tokens > 0 ? tokens / seconds : null;
+}
 
 /** Tolerantly pulls a string[] out of model output that should be a JSON array. */
 function parseStringArray(text: string): string[] {
@@ -90,30 +117,48 @@ export async function sendToCanvasAction(
 }
 
 /**
+ * Builds a new concept-map canvas from a free-form description typed in the
+ * Canvas tab. Returns the canvas id on success, or a user-facing error message.
+ */
+export async function describeCanvasAction(
+  description: string,
+): Promise<{ canvasId: string } | { error: string }> {
+  try {
+    const canvasId = await seedCanvasFromPrompt(description);
+    revalidatePath("/canvas");
+    return { canvasId };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to build the canvas." };
+  }
+}
+
+/**
  * Asks the local LLM to expand on a selected snippet from a canvas node,
  * answering the user's question. Returns text for a new connected node.
  */
 export async function expandCanvasNodeAction(
   context: string,
   question: string,
-): Promise<{ text: string } | { error: string }> {
+): Promise<{ text: string; tokensPerSecond: number | null } | { error: string }> {
   const snippet = context.trim().slice(0, 2_000);
   if (!snippet) {
     return { error: "Select or type some text in the node first." };
   }
-  const { model, modelId } = getChatModel();
-  if (!modelId) {
-    return { error: "No model configured. Set a model in Settings." };
+  const resolved = chatModelOrError();
+  if ("error" in resolved) {
+    return resolved;
   }
+  const { model } = resolved;
   const q = question.trim().slice(0, 500);
   const prompt = q
     ? `Selected text:\n"""${snippet}"""\n\nQuestion: ${q}\n\nWrite the expansion.`
     : `Selected text:\n"""${snippet}"""\n\nExpand on this with the most useful detail. Write the expansion.`;
   try {
-    const { text } = await generateText({ model, system: EXPAND_SYSTEM, prompt });
+    const startedAt = Date.now();
+    const { text, usage } = await generateText({ model, system: EXPAND_SYSTEM, prompt });
     const trimmed = text.trim();
     if (!trimmed) return { error: "The model returned nothing." };
-    return { text: trimmed };
+    return { text: trimmed, tokensPerSecond: tokensPerSecond(usage.outputTokens, text, startedAt) };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "The model request failed." };
   }
@@ -125,18 +170,19 @@ export async function expandCanvasNodeAction(
  */
 export async function branchCanvasNodeAction(
   context: string,
-): Promise<{ ideas: string[] } | { error: string }> {
+): Promise<{ ideas: string[]; tokensPerSecond: number | null } | { error: string }> {
   const snippet = context.trim().slice(0, 2_000);
   if (!snippet) {
     return { error: "Add some text to the node first." };
   }
-  const { model, modelId } = getChatModel();
-  if (!modelId) {
-    return { error: "No model configured. Set a model in Settings." };
+  const resolved = chatModelOrError();
+  if ("error" in resolved) {
+    return resolved;
   }
   try {
-    const { text } = await generateText({
-      model,
+    const startedAt = Date.now();
+    const { text, usage } = await generateText({
+      model: resolved.model,
       system: BRANCH_SYSTEM,
       prompt: `Node:\n"""${snippet}"""\n\nPropose 3-4 child ideas as a JSON array of strings.`,
     });
@@ -144,7 +190,7 @@ export async function branchCanvasNodeAction(
     if (ideas.length === 0) {
       return { error: "The model returned no usable ideas." };
     }
-    return { ideas };
+    return { ideas, tokensPerSecond: tokensPerSecond(usage.outputTokens, text, startedAt) };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "The model request failed." };
   }
@@ -153,24 +199,25 @@ export async function branchCanvasNodeAction(
 /** Asks the model to critique a canvas node (gaps, risks, counterpoints). */
 export async function critiqueCanvasNodeAction(
   context: string,
-): Promise<{ text: string } | { error: string }> {
+): Promise<{ text: string; tokensPerSecond: number | null } | { error: string }> {
   const snippet = context.trim().slice(0, 2_000);
   if (!snippet) {
     return { error: "Add some text to the node first." };
   }
-  const { model, modelId } = getChatModel();
-  if (!modelId) {
-    return { error: "No model configured. Set a model in Settings." };
+  const resolved = chatModelOrError();
+  if ("error" in resolved) {
+    return resolved;
   }
   try {
-    const { text } = await generateText({
-      model,
+    const startedAt = Date.now();
+    const { text, usage } = await generateText({
+      model: resolved.model,
       system: CRITIQUE_SYSTEM,
       prompt: `Node:\n"""${snippet}"""\n\nWrite the critique.`,
     });
     const trimmed = text.trim();
     if (!trimmed) return { error: "The model returned nothing." };
-    return { text: trimmed };
+    return { text: trimmed, tokensPerSecond: tokensPerSecond(usage.outputTokens, text, startedAt) };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "The model request failed." };
   }

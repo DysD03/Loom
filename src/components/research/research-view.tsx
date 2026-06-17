@@ -30,6 +30,7 @@ import { Markdown } from "@/components/markdown";
 import { CopyButton } from "@/components/copy-button";
 import { ModelSelect } from "@/components/chat/model-select";
 import { ContextMeter } from "@/components/chat/context-meter";
+import { TokenRate } from "@/components/chat/token-rate";
 import { ResearchSettings } from "@/components/research/research-settings";
 import { sendToCanvasAction } from "@/app/canvas/actions";
 import { sendReportToEditorAction } from "@/app/editor/actions";
@@ -346,6 +347,11 @@ export function ResearchView({
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-6">
         <h1 className="truncate text-base font-semibold">{title}</h1>
         <div className="flex items-center gap-2">
+          {/* Only the report streams to the client; planning/reflection calls don't. */}
+          <TokenRate
+            tokens={Math.ceil(report.length / 4)}
+            active={running && stage === "writing"}
+          />
           <ContextMeter messages={contextMessages} model={model} />
           <ModelSelect conversationId={conversationId} current={model} type="research" />
           <ResearchSettings conversationId={conversationId} config={config} disabled={running} />

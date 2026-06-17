@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Bot,
   Brain,
+  FlaskConical,
   Library,
   MessageSquare,
   NotebookPen,
@@ -20,6 +21,7 @@ const CATEGORY_META: Record<SearchCategory, { label: string; icon: LucideIcon }>
   chat: { label: "Chat", icon: MessageSquare },
   agent: { label: "Agent", icon: Bot },
   research: { label: "Research", icon: Telescope },
+  experimental: { label: "Experimental", icon: FlaskConical },
   document: { label: "Document", icon: Library },
   editor: { label: "Editor", icon: NotebookPen },
   memory: { label: "Memory", icon: Brain },

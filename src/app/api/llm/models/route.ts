@@ -1,4 +1,4 @@
-import { CLOUD_PROVIDERS, type CloudProvider } from "@/lib/models";
+import { configuredCloudProviders } from "@/lib/provider";
 import { getSettings } from "@/lib/settings";
 
 interface ModelsResponse {
@@ -14,15 +14,7 @@ export async function GET() {
   const settings = getSettings();
   const baseUrl = settings.llmBaseUrl.replace(/\/+$/, "");
 
-  const cloudProviders: CloudProvider[] = CLOUD_PROVIDERS.filter((provider) => {
-    const key =
-      provider === "anthropic"
-        ? settings.anthropicApiKey
-        : provider === "openai"
-          ? settings.openaiApiKey
-          : settings.googleApiKey;
-    return key.trim().length > 0;
-  });
+  const cloudProviders = configuredCloudProviders(settings);
 
   try {
     const res = await fetch(`${baseUrl}/models`, {

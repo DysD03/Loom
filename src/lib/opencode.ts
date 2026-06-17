@@ -1,12 +1,14 @@
 import "server-only";
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 
 export const OPENCODE_INSTALL_HINT =
-  "opencode was not found. Install it (`curl -fsSL https://opencode.ai/install | bash`), make sure it's on your PATH, and configure a model provider.";
+  "opencode was not found. Install it (`npm i -g opencode-ai`, or `curl -fsSL https://opencode.ai/install | bash`), make sure it's on your PATH, and configure a model provider.";
 
 type OpencodeClient = ReturnType<typeof createOpencodeClient>;
 
@@ -37,9 +39,33 @@ function findFreePort(): Promise<number> {
 
 /** PATH augmented with common opencode install locations (Node's PATH can be minimal). */
 function spawnEnv(): NodeJS.ProcessEnv {
-  const extra = [`${homedir()}/.opencode/bin`, "/opt/homebrew/bin", "/usr/local/bin"];
-  const PATH = [process.env.PATH, ...extra].filter(Boolean).join(":");
+  const extra = [
+    join(homedir(), ".opencode", "bin"),
+    process.env.APPDATA ? join(process.env.APPDATA, "npm") : null,
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+  ];
+  const PATH = [process.env.PATH, ...extra].filter(Boolean).join(delimiter);
   return { ...process.env, PATH };
+}
+
+/**
+ * Resolves the opencode executable for `spawn`. On Windows, npm installs only
+ * `.cmd`/`.ps1` shims, which `spawn` cannot execute without a shell — so find
+ * the real `opencode.exe`, either directly on PATH or behind the npm shim.
+ */
+function resolveCommand(env: NodeJS.ProcessEnv): string {
+  if (process.platform !== "win32") {
+    return "opencode";
+  }
+  for (const dir of (env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    const direct = join(dir, "opencode.exe");
+    if (existsSync(direct)) return direct;
+    const behindNpmShim = join(dir, "node_modules", "opencode-ai", "bin", "opencode.exe");
+    if (existsSync(behindNpmShim)) return behindNpmShim;
+  }
+  return "opencode"; // not found — spawn will fail and surface OPENCODE_INSTALL_HINT
 }
 
 async function waitUntilHealthy(baseUrl: string, signal: AbortSignal): Promise<void> {
@@ -64,11 +90,12 @@ async function startServer(): Promise<string> {
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
 
+  const env = spawnEnv();
   let proc: ChildProcess;
   try {
-    proc = spawn("opencode", ["serve", "--port", String(port), "--hostname", "127.0.0.1"], {
+    proc = spawn(resolveCommand(env), ["serve", "--port", String(port), "--hostname", "127.0.0.1"], {
       cwd: homedir(),
-      env: spawnEnv(),
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch {

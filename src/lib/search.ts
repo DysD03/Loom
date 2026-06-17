@@ -16,6 +16,7 @@ export type SearchCategory =
   | "chat"
   | "agent"
   | "research"
+  | "experimental"
   | "document"
   | "editor"
   | "memory";
@@ -43,9 +44,14 @@ function snippetAround(text: string, needle: string): string {
   return `${start > 0 ? "…" : ""}${clean.slice(start, end)}${end < clean.length ? "…" : ""}`;
 }
 
-function conversationHref(type: "chat" | "agent" | "research", id: string): string {
+function conversationHref(
+  type: "chat" | "agent" | "research" | "experimental",
+  id: string,
+): string {
   if (type === "chat") return `/?c=${id}`;
-  return `/${type === "agent" ? "agents" : "research"}?c=${id}`;
+  if (type === "agent") return `/agents?c=${id}`;
+  if (type === "experimental") return `/experimental?c=${id}`;
+  return `/research?c=${id}`;
 }
 
 /**

@@ -6,7 +6,7 @@ import { desc, eq } from "drizzle-orm";
 
 import { db } from "@/db/client";
 import { memories, type Memory, type MemoryType, MEMORY_TYPES } from "@/db/schema";
-import { getChatModel, getEmbeddingModel } from "./provider";
+import { getEmbeddingModel, getUtilityModel } from "./provider";
 import { getMessages } from "./conversations";
 import { cosineSimilarity, parseVector } from "./vectors";
 
@@ -14,6 +14,11 @@ const DEDUPE_THRESHOLD = 0.9;
 const RETRIEVAL_FLOOR = 0.3;
 const MAX_EXTRACTED = 12;
 const CONTENT_MAX = 400;
+
+/** Cheap existence check so callers can skip query embedding when there is nothing to retrieve. */
+export function hasMemories(): boolean {
+  return db.select({ id: memories.id }).from(memories).limit(1).get() !== undefined;
+}
 
 export function listMemories(): Memory[] {
   return db
@@ -185,7 +190,7 @@ export async function extractMemoriesFromConversation(
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
     .join("\n\n");
 
-  const { model } = getChatModel();
+  const { model } = getUtilityModel();
   const { text } = await generateText({
     model,
     system: EXTRACTION_SYSTEM,
