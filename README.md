@@ -9,6 +9,19 @@
 
 A personal, **local-first** web UI for your own local LLM. Everything runs on your machine — no cloud services, no telemetry, no accounts.
 
+## 🧪 New: Experimental Agent (bidirectional goal-convergence)
+
+A new **Experimental Agent** tab runs a *meet-in-the-middle* search between a **start** state and a **goal** state. Three roles work together: a **Forward agent** builds outward from the start, a **Backward agent** regresses from the goal, and a **Reconciler** detects where the two frontiers meet and stitches the full **START → … → GOAL** path (Dijkstra-flavored: it expands the cheapest frontier node first and prefers the lowest-cost meeting).
+
+What it does:
+
+- **Web-grounded reasoning (no hallucinating)** — every expansion is backed by a **live SearXNG search + a Firecrawl (MCP) scrape** of the top result, fed in as the only evidence the agents may use, so steps are built on real sources instead of the model's memory. Two header **tool windows** (SearXNG / Firecrawl) spin while active and show their last query/URL on hover.
+- **Decoupled frontiers** — each agent stays in its lane and takes the most direct, lowest-cost step; all convergence logic lives in the reconciler, which emits one focused hint per side each round. A small **round window** shows progress.
+- **Live, resumable runs** — the search streams round-by-round; if you reload mid-run it keeps going server-side and the view polls back to catch up. A **Cancel** button truly aborts the run (and its in-flight model call).
+- **Always lands somewhere** — on success it **auto-builds a Canvas** of the whole search with the taken path highlighted in neon-green; when no bridge is found it recommends concrete **alternative options to pursue**. **Send to Editor** exports the final answer as a Markdown doc (RAG-indexed).
+
+> Grounding uses your existing **SearXNG** instance plus a **Firecrawl MCP server** (add it under MCP servers / `mcp.json`). It needs a tool-capable, reasonably strong model — each round makes several model calls plus a search + scrape, so runs are deliberate, not instant.
+
 ## ⚡ Performance
 
 A dedicated performance pass keeps Loom feeling instant, even with a large knowledge base and several MCP servers:
@@ -31,6 +44,7 @@ Tabs (built phase by phase — see `PLAN.md`):
 - **Chat** — streaming conversational chat
 - **Agents** — chat that calls tools (built-in + MCP) in an agent loop
 - **Deep Research** — plan → search (SearXNG) → read → **cited report**, with live staged progress and a numbered source list matching the inline `[n]` citations
+- **Experimental Agent** — bidirectional goal-convergence search (Forward + Backward agents + Reconciler) that meets in the middle to stitch a START → GOAL path, **grounded in live SearXNG + Firecrawl** evidence; auto-builds a Canvas of the taken path, or recommends alternatives when no path is found (see above)
 - **Canvas** — a React Flow whiteboard for connected ideas: editable idea/heading nodes, free-form connections, drag/pan/zoom/multi-select, one-click **dagre auto-layout**, and debounced autosave. **Send to Canvas** (from Chat, Agents, or Deep Research) asks the model to distill the session into a concept map and seeds a new board
 - **OpenCode** — drive the [opencode](https://github.com/sst/opencode) coding agent to actually build/run projects on your machine. Add a project folder as a workspace, give it a task, and watch it work; **Send to OpenCode** turns a Chat/Agent/Research/Canvas session into a build task. Loom manages a local `opencode serve` for you
 - **Editor** — a Markdown document editor with live preview and built-in AI: inline **assist** (rewrite / expand / shorten / fix grammar) on a selection, a **doc-aware side chat** that always sees the current text, and a one-click **Verify use cases** review that surfaces gaps, contradictions, edge cases, and unstated assumptions. Documents you write are auto-saved and **indexed into the RAG knowledge base**, so Chat and Agents can reference them
@@ -265,10 +279,11 @@ The **Documents** tab is a local retrieval-augmented-generation knowledge base. 
 
 ```
 src/
-  app/            # routes: / (Chat), /agents, /research, /canvas, /opencode, /editor, /documents, /memory, /settings
+  app/            # routes: / (Chat), /agents, /research, /experimental, /canvas, /opencode, /editor, /documents, /memory, /settings
     api/
       chat/       # streaming chat route (tools + memory + document injection)
       agent/      # agent route: multi-step tool loop, capability-gated tools
+      bidirectional/  # Experimental Agent: NDJSON run stream + poll/cancel (SearXNG + Firecrawl grounding)
       editor/     # doc-aware assistant chat for the Editor tab
       documents/  # multipart upload → parse → chunk → embed → store
       tools/      # available-tool list (for the per-session toggles)
