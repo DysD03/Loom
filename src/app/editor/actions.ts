@@ -12,6 +12,7 @@ import {
 } from "@/lib/editor";
 import { getChatModel } from "@/lib/provider";
 import { getLatestReport, loadReport, reportToMarkdown } from "@/lib/research";
+import { getLatestRun, loadRun, runToMarkdown } from "@/lib/bidirectional";
 
 export async function newEditorDocAction(): Promise<string> {
   const doc = createEditorDocument();
@@ -77,6 +78,38 @@ export async function sendReportToEditorAction(
 
   // Mirror into the knowledge base so Chat/Agents can reference it. Best-effort:
   // a missing embeddings model just leaves it un-indexed.
+  try {
+    await reindexEditorDocument(doc.id);
+  } catch {
+    // ignore — the document is saved and editable regardless
+  }
+
+  revalidatePath("/editor");
+  return { docId: doc.id };
+}
+
+/**
+ * Creates a new Editor document from an Experimental Agent conversation's latest
+ * goal-convergence run — the problem framing plus the final answer (the stitched
+ * bridge, or the closest match + gaps). Best-effort indexes it into the RAG
+ * knowledge base. Returns the new document id for navigation.
+ */
+export async function sendBidirectionalToEditorAction(
+  conversationId: string,
+): Promise<{ docId: string } | { error: string }> {
+  const row = getLatestRun(conversationId);
+  if (!row) {
+    return { error: "No goal search has been run yet." };
+  }
+  const run = loadRun(row);
+  if (!run.bridge && !run.reconcile) {
+    return { error: "Run a goal search first." };
+  }
+
+  const { title, content } = runToMarkdown(run);
+  const doc = createEditorDocument();
+  saveEditorContent(doc.id, { title, content });
+
   try {
     await reindexEditorDocument(doc.id);
   } catch {

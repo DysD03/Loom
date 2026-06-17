@@ -1,7 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import type { UIMessage } from "ai";
+import { toast } from "sonner";
 import {
   ArrowRight,
   CheckCircle2,
@@ -9,9 +11,11 @@ import {
   Flag,
   GitMerge,
   Loader2,
+  NotebookPen,
   Play,
   Rocket,
   TriangleAlert,
+  Workflow,
 } from "lucide-react";
 
 import type { GoalStatus } from "@/db/schema";
@@ -31,6 +35,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ModelSelect } from "@/components/chat/model-select";
+import { ContextMeter } from "@/components/chat/context-meter";
+import { sendBidirectionalToEditorAction } from "@/app/editor/actions";
+import { sendRunToCanvasAction } from "@/app/canvas/actions";
 
 const STATUS_LABEL: Record<GoalStatus, string> = {
   planning: "Seeding the start & goal frontiers",
@@ -189,10 +196,73 @@ export function BidirectionalView({
   const [bridge, setBridge] = useState<BridgeResult | null>(initialRun?.bridge ?? null);
   const [round, setRound] = useState<{ index: number; max: number } | null>(null);
   const [error, setError] = useState<string | null>(initialRun?.error ?? null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [isSeeding, setIsSeeding] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Set when a bridge arrives mid-stream, so we can auto-open the canvas once the
+  // run finishes (without auto-firing on an already-loaded past run).
+  const freshBridgeRef = useRef(false);
 
   const bestForward = reconcile?.bestPair?.forwardId ?? bridge?.forwardId ?? null;
   const bestBackward = reconcile?.bestPair?.backwardId ?? bridge?.backwardId ?? null;
+
+  // A synthetic transcript so the context meter reflects this run's pressure on
+  // the model's context window (framing + both frontiers + the stitched bridge).
+  const contextMessages = useMemo<UIMessage[]>(() => {
+    const msgs: UIMessage[] = [];
+    const framing = [
+      problemSpec,
+      startState ? `Start: ${startState}` : "",
+      goalState ? `Goal: ${goalState}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    if (framing) msgs.push({ id: "framing", role: "user", parts: [{ type: "text", text: framing }] });
+    const nodeText = [...forward, ...backward]
+      .map((n) => `${n.description} ${n.establishedFacts.join(" ")} ${n.requiredConditions.join(" ")}`)
+      .join("\n");
+    const body = [nodeText, bridge?.path.join("\n") ?? ""].filter(Boolean).join("\n\n");
+    if (body) msgs.push({ id: "ctx", role: "assistant", parts: [{ type: "text", text: body }] });
+    return msgs;
+  }, [problemSpec, startState, goalState, forward, backward, bridge]);
+
+  async function handleSendToCanvas() {
+    if (isSeeding) return;
+    setIsSeeding(true);
+    const toastId = toast.loading("Building the solution canvas…");
+    try {
+      const result = await sendRunToCanvasAction(conversationId);
+      if ("error" in result) {
+        toast.error("Send to Canvas failed", { id: toastId, description: result.error });
+        return;
+      }
+      toast.success("Canvas created — opening", { id: toastId });
+      router.push(`/canvas?c=${result.canvasId}`);
+    } catch {
+      toast.error("Send to Canvas failed", { id: toastId });
+    } finally {
+      setIsSeeding(false);
+    }
+  }
+
+  async function handleSendToEditor() {
+    if (isExporting) return;
+    setIsExporting(true);
+    const toastId = toast.loading("Saving the final answer to the editor…");
+    try {
+      const result = await sendBidirectionalToEditorAction(conversationId);
+      if ("error" in result) {
+        toast.error("Send to Editor failed", { id: toastId, description: result.error });
+        return;
+      }
+      toast.success("Opened in editor", { id: toastId });
+      router.push(`/editor?d=${result.docId}`);
+    } catch {
+      toast.error("Send to Editor failed", { id: toastId });
+    } finally {
+      setIsExporting(false);
+    }
+  }
 
   function handleEvent(event: GoalEvent) {
     switch (event.type) {
@@ -220,6 +290,7 @@ export function BidirectionalView({
         break;
       case "bridge":
         setBridge(event.bridge);
+        freshBridgeRef.current = true;
         break;
       case "error":
         setError(event.message);
@@ -242,6 +313,7 @@ export function BidirectionalView({
     setBridge(null);
     setRound(null);
     setStatus("planning");
+    freshBridgeRef.current = false;
 
     try {
       const res = await fetch("/api/bidirectional", {
@@ -286,6 +358,12 @@ export function BidirectionalView({
       setRound(null);
       router.refresh();
     }
+
+    // Bridging is done — automatically build + open the solution canvas.
+    if (freshBridgeRef.current) {
+      freshBridgeRef.current = false;
+      await handleSendToCanvas();
+    }
   }
 
   const busy = running && status !== null && status !== "done" && status !== "error";
@@ -295,7 +373,28 @@ export function BidirectionalView({
     <div className="flex h-full min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b px-6">
         <h1 className="truncate text-base font-semibold">{title}</h1>
-        <ModelSelect conversationId={conversationId} current={model} type="experimental" />
+        <div className="flex items-center gap-2">
+          <ContextMeter messages={contextMessages} model={model} />
+          <ModelSelect conversationId={conversationId} current={model} type="experimental" />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSendToCanvas}
+            disabled={isSeeding || running || (forward.length === 0 && backward.length === 0)}
+          >
+            <Workflow className="size-4" />
+            {isSeeding ? "Building…" : "Send to Canvas"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSendToEditor}
+            disabled={isExporting || running || (!bridge && !reconcile)}
+          >
+            <NotebookPen className="size-4" />
+            {isExporting ? "Saving…" : "Send to Editor"}
+          </Button>
+        </div>
       </header>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">

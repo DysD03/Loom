@@ -12,6 +12,7 @@ import {
   type CanvasGraph,
 } from "@/lib/canvas";
 import { seedCanvasFromPrompt, seedCanvasFromSource, type SeedKind } from "@/lib/seed";
+import { createRunCanvas, getLatestRun, loadRun } from "@/lib/bidirectional";
 import { getChatModel } from "@/lib/provider";
 
 const EXPAND_SYSTEM =
@@ -109,6 +110,27 @@ export async function sendToCanvasAction(
 ): Promise<{ canvasId: string } | { error: string }> {
   try {
     const canvasId = await seedCanvasFromSource(sourceId, kind);
+    revalidatePath("/canvas");
+    return { canvasId };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to build the canvas." };
+  }
+}
+
+/**
+ * Builds a canvas of an Experimental Agent run's search graph — both frontiers
+ * with the taken path (the stitched bridge) highlighted. Deterministic, no LLM.
+ * Returns the canvas id on success, or a user-facing error message.
+ */
+export async function sendRunToCanvasAction(
+  conversationId: string,
+): Promise<{ canvasId: string } | { error: string }> {
+  try {
+    const row = getLatestRun(conversationId);
+    if (!row) {
+      return { error: "No goal search has been run yet." };
+    }
+    const canvasId = createRunCanvas(loadRun(row));
     revalidatePath("/canvas");
     return { canvasId };
   } catch (err) {

@@ -3,9 +3,12 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { desc, eq } from "drizzle-orm";
 import { generateText, type LanguageModel } from "ai";
+import dagre from "dagre";
+import type { Edge, Node } from "@xyflow/react";
 
 import { db } from "@/db/client";
 import { goalRuns, type GoalRun, type GoalStatus } from "@/db/schema";
+import { createCanvas, renameCanvas, saveCanvasGraph, type CanvasGraph } from "./canvas";
 import {
   DEFAULT_GOAL_ROUNDS,
   GOAL_ROUNDS_MAX,
@@ -94,6 +97,180 @@ export function loadRun(row: GoalRun): LoadedRun {
     maxRounds: row.maxRounds,
     error: row.error,
   };
+}
+
+/**
+ * Renders a finished run as a self-contained Markdown document: the problem
+ * framing plus the result — the stitched START→…→GOAL bridge if one was found,
+ * or the closest match and remaining gaps otherwise. Used when exporting the
+ * final answer to the Editor tab.
+ */
+export function runToMarkdown(run: LoadedRun): { title: string; content: string } {
+  const title = run.goalState.trim() || "Goal search";
+  const parts: string[] = [`# ${title}`, "", "## Problem", ""];
+  if (run.problemSpec.trim()) parts.push(run.problemSpec.trim(), "");
+  parts.push(`**Start state:** ${run.startState.trim() || "—"}`, "");
+  parts.push(`**Goal state:** ${run.goalState.trim() || "—"}`, "");
+
+  parts.push("## Result", "");
+  if (run.bridge) {
+    parts.push(`**Bridge found** — total estimated cost ${run.bridge.totalCost}.`, "");
+    run.bridge.path.forEach((step, i) => parts.push(`${i + 1}. ${step}`));
+    parts.push("");
+  } else {
+    parts.push("No full bridge was found within the round budget.", "");
+    if (run.reconcile?.bestPair) {
+      parts.push(
+        `Closest match: ${run.reconcile.bestPair.forwardId} ⨁ ${run.reconcile.bestPair.backwardId} ` +
+          `(${Math.round(run.reconcile.bestPair.score * 100)}% of the goal's conditions satisfied).`,
+        "",
+      );
+    }
+    if (run.reconcile && run.reconcile.unmetConditions.length > 0) {
+      parts.push("**Still unmet:**", "");
+      for (const c of run.reconcile.unmetConditions) parts.push(`- ${c}`);
+      parts.push("");
+    }
+  }
+
+  return { title, content: `${parts.join("\n").trim()}\n` };
+}
+
+// --- Canvas export ---------------------------------------------------------
+
+function canvasNodeSize(text: string, heading: boolean): { width: number; height: number } {
+  const width = 224;
+  if (heading) return { width, height: 54 };
+  const lines = Math.ceil(Math.max(text.length, 1) / 30);
+  return { width, height: Math.min(180, Math.max(60, 30 + lines * 20)) };
+}
+
+function nodeLabel(node: GoalNode): string {
+  if (node.id === "F0" || node.id === "GOAL") return node.description;
+  return `${node.description}\ncost ${node.costFromOrigin}`;
+}
+
+/** Walks parentIds from `startId` to the root, returning the chain of ids (node → root). */
+function chainIds(startId: string, byId: Map<string, GoalNode>): string[] {
+  const ids: string[] = [];
+  let current = byId.get(startId);
+  const guard = new Set<string>();
+  while (current && !guard.has(current.id)) {
+    guard.add(current.id);
+    ids.push(current.id);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return ids;
+}
+
+/**
+ * Builds a React Flow graph of the whole search — both frontiers laid out left
+ * (START) to right (GOAL) — with the taken path (the stitched bridge) drawn in
+ * neon-green and the rest dimmed. Deterministic: no LLM, straight from the run's
+ * nodes, parent links, and bridge.
+ */
+export function runToCanvasGraph(run: LoadedRun): CanvasGraph {
+  const fById = new Map(run.forward.map((n) => [n.id, n]));
+  const bById = new Map(run.backward.map((n) => [n.id, n]));
+
+  // Identify the nodes/edges on the taken path (only when a bridge was found).
+  const pathNodes = new Set<string>();
+  const pathEdges = new Set<string>();
+  if (run.bridge) {
+    const fChain = chainIds(run.bridge.forwardId, fById); // F … F0
+    const bChain = chainIds(run.bridge.backwardId, bById); // B … GOAL
+    for (const id of [...fChain, ...bChain]) pathNodes.add(id);
+    // Forward edges are drawn parent→child; backward edges child→parent.
+    for (let i = 0; i < fChain.length - 1; i++) pathEdges.add(`${fChain[i + 1]}->${fChain[i]}`);
+    for (let i = 0; i < bChain.length - 1; i++) pathEdges.add(`${bChain[i]}->${bChain[i + 1]}`);
+    pathEdges.add(`${run.bridge.forwardId}->${run.bridge.backwardId}`);
+  }
+  const dimEverythingElse = Boolean(run.bridge);
+
+  const g = new dagre.graphlib.Graph();
+  g.setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: "LR", nodesep: 40, ranksep: 90, marginx: 24, marginy: 24 });
+
+  const nodes: Node[] = [];
+  const addNode = (gn: GoalNode, heading: boolean) => {
+    const text = nodeLabel(gn);
+    const size = canvasNodeSize(text, heading);
+    g.setNode(gn.id, size);
+    const onPath = pathNodes.has(gn.id);
+    nodes.push({
+      id: gn.id,
+      type: heading ? "heading" : "idea",
+      position: { x: 0, y: 0 },
+      data: { text },
+      style: dimEverythingElse
+        ? onPath
+          ? {
+              boxShadow:
+                "0 0 0 2px var(--neon-green), 0 0 18px -4px var(--neon-green)",
+              borderRadius: "8px",
+            }
+          : { opacity: 0.45 }
+        : undefined,
+    });
+  };
+
+  for (const gn of run.forward) addNode(gn, gn.id === "F0");
+  for (const gn of run.backward) addNode(gn, gn.id === "GOAL");
+
+  const edges: Edge[] = [];
+  const addEdge = (source: string, target: string, label?: string) => {
+    if (!g.hasNode(source) || !g.hasNode(target)) return;
+    const key = `${source}->${target}`;
+    const onPath = pathEdges.has(key);
+    g.setEdge(source, target);
+    edges.push({
+      id: key,
+      source,
+      target,
+      label,
+      animated: onPath,
+      style: onPath
+        ? { stroke: "var(--neon-green)", strokeWidth: 2.5 }
+        : {
+            stroke: "var(--muted-foreground)",
+            strokeWidth: 1,
+            opacity: dimEverythingElse ? 0.3 : 0.7,
+          },
+    });
+  };
+
+  // Forward tree: parent → child (F0 ends up on the left).
+  for (const gn of run.forward) {
+    if (gn.parentId) addEdge(gn.parentId, gn.id);
+  }
+  // Backward tree: child → parent (GOAL ends up on the right).
+  for (const gn of run.backward) {
+    if (gn.parentId) addEdge(gn.id, gn.parentId);
+  }
+  // The bridge connector joining the two frontiers.
+  if (run.bridge) addEdge(run.bridge.forwardId, run.bridge.backwardId, "BRIDGE");
+
+  dagre.layout(g);
+  for (const node of nodes) {
+    const pos = g.node(node.id);
+    if (pos) node.position = { x: pos.x - pos.width / 2, y: pos.y - pos.height / 2 };
+  }
+
+  return { nodes, edges };
+}
+
+/**
+ * Builds + persists a canvas of a run's search graph (taken path highlighted)
+ * and returns the new canvas id.
+ */
+export function createRunCanvas(run: LoadedRun): string {
+  const graph = runToCanvasGraph(run);
+  if (graph.nodes.length === 0) throw new Error("This run has no nodes to map yet.");
+  const canvas = createCanvas();
+  const title = `Path · ${run.goalState.trim() || "Goal search"}`;
+  renameCanvas(canvas.id, title.slice(0, 60));
+  saveCanvasGraph(canvas.id, graph);
+  return canvas.id;
 }
 
 // --- Prompts ---------------------------------------------------------------
