@@ -9,6 +9,13 @@
 
 A personal, **local-first** web UI for your own local LLM. Everything runs on your machine — no cloud services, no telemetry, no accounts.
 
+## 📊 New: Dashboards & Benchmarks
+
+Two new tabs join the workspace:
+
+- **Dashboards** — turn any **Markdown into a live dashboard**: paste text, upload a `.md` file, or pick an Editor document, and the model extracts its numbers, tables, and lists into a structured spec rendered with Loom's own theme-native widgets — KPI stat tiles, bar/line/area/donut charts (hover tooltips + a table-view twin per chart), tables, checklists, callouts, and meters. When the model is unreachable a deterministic Markdown parser builds the dashboard instead (with a clear notice), so it always renders; edit the source or add guidance and **Regenerate** anytime.
+- **Benchmarks** — race up to 5 models (local + cloud, mixed) through **standardized or custom benchmark suites** and compare them with live charts: a leaderboard, overall + per-category accuracy, response time, and tokens/sec, plus a per-task ✓/✗ matrix where you can inspect every model's raw output. Four built-in auto-scored suites ship out of the box; custom suites support exact/contains/numeric/regex/multiple-choice/JSON scoring and an LLM-as-judge mode.
+
 ## 🧪 New: Experimental Agent (bidirectional goal-convergence)
 
 A new **Experimental Agent** tab runs a *meet-in-the-middle* search between a **start** state and a **goal** state. Three roles work together: a **Forward agent** builds outward from the start, a **Backward agent** regresses from the goal, and a **Reconciler** detects where the two frontiers meet and stitches the full **START → … → GOAL** path (Dijkstra-flavored: it expands the cheapest frontier node first and prefers the lowest-cost meeting).
