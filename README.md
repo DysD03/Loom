@@ -47,6 +47,8 @@ Tabs (built phase by phase — see `PLAN.md`):
 - **Deep Research** — plan → search (SearXNG) → read → **cited report**, with live staged progress and a numbered source list matching the inline `[n]` citations
 - **Experimental Agent** — bidirectional goal-convergence search (Forward + Backward agents + Reconciler) that meets in the middle to stitch a START → GOAL path, **grounded in live SearXNG + Firecrawl** evidence; auto-builds a Canvas of the taken path, or recommends alternatives when no path is found (see above)
 - **Canvas** — a React Flow whiteboard for connected ideas: editable idea/heading nodes, free-form connections, drag/pan/zoom/multi-select, one-click **dagre auto-layout**, and debounced autosave. **Talk to canvas** — a board-aware chat that answers questions about the graph *and* edits it live (add / connect / rename / remove nodes). **Send to Canvas** (from Chat, Agents, or Deep Research) asks the model to distill the session into a concept map and seeds a new board
+- **Dashboards** — turn any **Markdown into a live dashboard**: paste text, upload a `.md` file, or pick an Editor document, and the model extracts its numbers, tables, and lists into a structured spec rendered with native widgets — KPI stat tiles, bar/line/area/donut charts (hover tooltips + a table-view twin per chart), tables, checklists, callouts, and meters. When the model is unreachable a deterministic Markdown parser builds the dashboard instead (with a clear notice), so it always renders; edit the source or add guidance and **Regenerate** anytime
+- **Benchmarks** — race up to 5 models (local + cloud, mixed) through **standardized or custom benchmark suites** and compare them with live charts: a leaderboard, overall + per-category accuracy, response time, and tokens/sec, plus a per-task ✓/✗ matrix where you can inspect every model's raw output. Four built-in auto-scored suites ship out of the box; custom suites support exact/contains/numeric/regex/multiple-choice/JSON scoring and an LLM-as-judge mode
 - **OpenCode** — drive the [opencode](https://github.com/sst/opencode) coding agent to actually build/run projects on your machine. Add a project folder as a workspace, give it a task, and watch it work; **Send to OpenCode** turns a Chat/Agent/Research/Canvas session into a build task. Loom manages a local `opencode serve` for you
 - **Editor** — a Markdown document editor with live preview and built-in AI: inline **assist** (rewrite / expand / shorten / fix grammar) on a selection, a **doc-aware side chat** that always sees the current text, and a one-click **Verify use cases** review that surfaces gaps, contradictions, edge cases, and unstated assumptions. Documents you write are auto-saved and **indexed into the RAG knowledge base**, so Chat and Agents can reference them
 - **Documents** — a local **RAG** knowledge base: drag-and-drop PDF, Markdown, and text files; Loom chunks + embeds them, then the model references the most relevant excerpts automatically in Chat and Agents (and on demand via a `searchDocuments` tool)
@@ -265,6 +267,26 @@ The **Editor** tab is a distraction-light Markdown editor with a live preview, b
 - **Inline assist** — select some text (or act on the whole document) and apply **Rewrite**, **Expand**, **Shorten**, or **Fix grammar**; the model's result replaces your selection in place.
 - **Doc-aware assistant** — a side-panel chat that always has the current document as context. Ask questions about the draft, or click **Verify use cases** for a structured review of gaps, contradictions, missing/edge cases, ambiguous requirements, and unstated assumptions.
 - **Auto-save + RAG indexing** — edits autosave as you write, and the document is mirrored into the Documents knowledge base so Chat and Agents can reference it (needs an embeddings model, same as uploads). Editor-authored docs are managed here, not in the Documents upload list.
+
+## Benchmarks (compare your models)
+
+The **Benchmarks** tab races local and cloud models through the same task set and charts the results — accuracy, per-category strengths, response time, and generation speed.
+
+- **Pick any mix of models** — everything your local endpoint exposes, curated cloud models for each provider with an API key, or any free-text model id (up to 5 per run). Requests run one at a time so latency and tokens/sec stay uncontended and honest.
+- **Standardized suites** — four built-in, deterministically auto-scored suites: **Quick Check** (10-task smoke test), **Reasoning & Math** (GSM8K-style word problems), **General Knowledge** (MMLU-style multiple choice), and **Instruction Following** (IFEval-style checkable constraints). Scoring never depends on a model's opinion, so results are comparable across runs.
+- **Custom suites** — author your own tasks with exact / contains / numeric / regex / multiple-choice / JSON scoring, or an **AI judge** mode that grades 0–10 against your reference answer (uses the utility model).
+- **Live results** — runs execute in the background and the page streams progress; charts and the leaderboard update as results land, and a run can be cancelled mid-flight. Each run snapshots its tasks, so editing a suite later never rewrites history.
+- **Drill down** — the task matrix shows pass/fail per model per task; click a row to see the prompt, the expected answer, and every model's raw output with timing.
+
+## Dashboards (Markdown → dashboard)
+
+The **Dashboards** tab turns a Markdown document into a dashboard rendered with Loom's own widgets — no charting library, just theme-native SVG.
+
+- **Three sources** — paste Markdown, upload a `.md`/`.txt` file, or load an Editor document straight into the form.
+- **Structured, not freeform** — the model emits a JSON spec (stat tiles, bar/line/area/donut charts, tables, checklists, progress meters, callouts, quotes, short text blocks), and Loom renders it. Numbers must come from the document; the spec is validated and tolerantly repaired before it's saved.
+- **Readable charts** — a colorblind-validated palette derived from the app's neon hues, hover tooltips on every mark, and a one-click **table view** twin per chart.
+- **Always renders** — if the model is down or returns junk, a deterministic parser builds the dashboard from the Markdown structure itself (headings → sections, numeric tables → charts, `Label: value` lists → KPI rows) and the header says so; hit **Regenerate** once your LLM is back.
+- **Iterate** — open **Source** to edit the Markdown or add guidance ("focus on the revenue numbers") and regenerate; a failed regenerate keeps the previous dashboard.
 
 ## Documents (RAG)
 

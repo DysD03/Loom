@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 /**
  * Single-row application settings (id is always 1).
@@ -356,6 +356,120 @@ export const editorDocuments = sqliteTable("editor_documents", {
 });
 
 export type EditorDocument = typeof editorDocuments.$inferSelect;
+
+/**
+ * A Markdown → dashboard. Stores the source Markdown and the generated
+ * DashboardSpec (see `src/lib/dashboard-spec.ts`) as JSON. The spec comes from
+ * the LLM when it is reachable, or from the deterministic Markdown parser
+ * otherwise (`generatedBy` records which, so the UI can offer a re-run).
+ */
+export const dashboards = sqliteTable("dashboards", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull().default("Untitled dashboard"),
+  /** The Markdown the dashboard is built from. */
+  sourceMarkdown: text("source_markdown").notNull().default(""),
+  /** Where the Markdown came from: a file name, an Editor doc title, or "Pasted Markdown". */
+  sourceName: text("source_name").notNull().default(""),
+  /** JSON-encoded DashboardSpec; null until first generated. */
+  spec: text("spec"),
+  generatedBy: text("generated_by", { enum: ["model", "fallback"] })
+    .notNull()
+    .default("fallback"),
+  /** Model id that produced the spec (when generatedBy is "model"). */
+  model: text("model"),
+  /** Latest generation problem (e.g. the LLM was unreachable), if any. */
+  error: text("error"),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type DashboardRow = typeof dashboards.$inferSelect;
+
+/**
+ * A benchmark suite — a named set of tasks (see BenchTask in
+ * `src/lib/benchmark-score.ts`) stored as JSON. `builtin` rows are the seeded
+ * standardized suites; the rest are user-authored custom benchmarks.
+ */
+export const benchmarkSuites = sqliteTable("benchmark_suites", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  builtin: integer("builtin", { mode: "boolean" }).notNull().default(false),
+  /** JSON-encoded BenchTask[]. */
+  tasks: text("tasks").notNull().default("[]"),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type BenchmarkSuite = typeof benchmarkSuites.$inferSelect;
+
+/**
+ * One benchmark execution: a suite snapshot run against a set of models. The
+ * tasks are copied in at creation so runs stay reproducible when the suite is
+ * later edited or deleted. Per-task outputs land in `benchmark_results`.
+ */
+export const benchmarkRuns = sqliteTable("benchmark_runs", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull().default("Benchmark run"),
+  suiteId: text("suite_id").references(() => benchmarkSuites.id, { onDelete: "set null" }),
+  suiteName: text("suite_name").notNull().default(""),
+  /** JSON-encoded string[] of the compared model ids. */
+  models: text("models").notNull().default("[]"),
+  /** JSON-encoded BenchTask[] snapshot taken at run creation. */
+  tasks: text("tasks").notNull().default("[]"),
+  status: text("status", {
+    enum: ["pending", "running", "done", "error", "cancelled"],
+  })
+    .notNull()
+    .default("pending"),
+  /** Populated when status is "error". */
+  error: text("error"),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type BenchmarkRun = typeof benchmarkRuns.$inferSelect;
+export type BenchmarkRunStatus = BenchmarkRun["status"];
+
+/** One model's answer to one task of a run, with its score and timing. */
+export const benchmarkResults = sqliteTable(
+  "benchmark_results",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => benchmarkRuns.id, { onDelete: "cascade" }),
+    model: text("model").notNull(),
+    taskIndex: integer("task_index").notNull(),
+    output: text("output").notNull().default(""),
+    /** 0..1 (binary for deterministic scorers, graded for the judge). */
+    score: real("score").notNull().default(0),
+    passed: integer("passed", { mode: "boolean" }).notNull().default(false),
+    latencyMs: integer("latency_ms").notNull().default(0),
+    outputTokens: integer("output_tokens"),
+    tokensPerSecond: real("tokens_per_second"),
+    /** Request/scoring failure for this cell, if any. */
+    error: text("error"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+  },
+  (t) => [index("benchmark_results_run_idx").on(t.runId, t.model, t.taskIndex)],
+);
+
+export type BenchmarkResult = typeof benchmarkResults.$inferSelect;
 
 /** An MCP server entry managed from the Settings page. */
 export const mcpServers = sqliteTable("mcp_servers", {

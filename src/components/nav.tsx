@@ -14,6 +14,8 @@ import {
   Library,
   NotebookPen,
   FlaskConical,
+  LayoutDashboard,
+  Gauge,
   type LucideIcon,
 } from "lucide-react";
 
@@ -31,6 +33,8 @@ const primaryItems: NavItem[] = [
   { href: "/research", label: "Deep Research", icon: Telescope },
   { href: "/experimental", label: "Experimental Agent", icon: FlaskConical },
   { href: "/canvas", label: "Canvas", icon: Workflow },
+  { href: "/dashboards", label: "Dashboards", icon: LayoutDashboard },
+  { href: "/benchmarks", label: "Benchmarks", icon: Gauge },
   { href: "/opencode", label: "OpenCode", icon: SquareTerminal },
   { href: "/editor", label: "Editor", icon: NotebookPen },
   { href: "/documents", label: "Documents", icon: Library },

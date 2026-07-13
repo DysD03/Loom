@@ -120,6 +120,20 @@
       "when": 1781694439344,
       "tag": "0016_windy_joshua_kane",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1783931871305,
+      "tag": "0017_plain_kang",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1783933239531,
+      "tag": "0018_thick_molten_man",
+      "breakpoints": true
     }
   ]
 }
