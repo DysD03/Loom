@@ -18,8 +18,11 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { updateSettings } from "./actions";
 
+/** The free-text settings; the numeric compute rate is handled separately. */
+type TextSettingKey = Exclude<keyof SettingsInput, "computeCostPerHour">;
+
 interface FieldProps {
-  id: keyof SettingsInput;
+  id: TextSettingKey;
   label: string;
   hint?: string;
   warning?: React.ReactNode;
@@ -60,16 +63,23 @@ function withV1(url: string): string {
 
 export function SettingsForm({ initial }: { initial: SettingsInput }) {
   const [form, setForm] = useState<SettingsInput>(initial);
+  const [costPerHour, setCostPerHour] = useState(
+    initial.computeCostPerHour > 0 ? String(initial.computeCostPerHour) : "",
+  );
   const [isSaving, startSaving] = useTransition();
   const [isTesting, setIsTesting] = useState(false);
 
-  const setField = (key: keyof SettingsInput) => (value: string) =>
+  const setField = (key: TextSettingKey) => (value: string) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
   function handleSave() {
     startSaving(async () => {
       try {
-        await updateSettings(form);
+        const rate = Number(costPerHour);
+        await updateSettings({
+          ...form,
+          computeCostPerHour: Number.isFinite(rate) && rate > 0 ? rate : 0,
+        });
         toast.success("Settings saved");
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to save settings");
@@ -220,6 +230,40 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
             value={form.googleApiKey}
             onChange={setField("googleApiKey")}
           />
+          <Separator />
+          <Button onClick={handleSave} disabled={isSaving}>
+            {isSaving ? "Saving…" : "Save"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Compute cost</CardTitle>
+          <CardDescription>
+            Used by Benchmarks to estimate what a run costs on this machine. Entirely
+            self-reported — local inference is never metered. Rule of thumb: watts ×
+            $/kWh ÷ 1000, e.g. a 450&nbsp;W box at $0.30/kWh ≈ $0.14/hour (add more if you
+            amortize hardware).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="computeCostPerHour">Machine cost ($ per hour)</Label>
+            <Input
+              id="computeCostPerHour"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="0.15"
+              value={costPerHour}
+              onChange={(e) => setCostPerHour(e.target.value)}
+              autoComplete="off"
+            />
+            <p className="text-muted-foreground text-xs">
+              Empty or 0 hides the cost estimates on the Benchmarks tab.
+            </p>
+          </div>
           <Separator />
           <Button onClick={handleSave} disabled={isSaving}>
             {isSaving ? "Saving…" : "Save"}

@@ -17,8 +17,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs";
-import type { BenchTask } from "@/lib/benchmark-score";
+import type { BenchTask, HistoryEntry } from "@/lib/benchmark-score";
 import { deleteSuiteAction } from "@/app/benchmarks/actions";
+import { BenchmarkHistory } from "./history";
 import { ModelPicker } from "./model-picker";
 import { SuiteEditor } from "./suite-editor";
 
@@ -32,7 +33,13 @@ export interface SuiteView {
   tasks: BenchTask[];
 }
 
-export function BenchmarkCreate({ suites }: { suites: SuiteView[] }) {
+export function BenchmarkCreate({
+  suites,
+  history,
+}: {
+  suites: SuiteView[];
+  history: HistoryEntry[];
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [suiteId, setSuiteId] = useState<string>(suites[0]?.id ?? "");
@@ -94,6 +101,7 @@ export function BenchmarkCreate({ suites }: { suites: SuiteView[] }) {
           <TabsList>
             <TabsTab value="run">Run benchmark</TabsTab>
             <TabsTab value="suites">Suites</TabsTab>
+            <TabsTab value="history">History</TabsTab>
           </TabsList>
 
           <TabsPanel value="run" className="space-y-5 pt-2">
@@ -209,6 +217,10 @@ export function BenchmarkCreate({ suites }: { suites: SuiteView[] }) {
                 </Button>
               </>
             )}
+          </TabsPanel>
+
+          <TabsPanel value="history" className="pt-2">
+            <BenchmarkHistory entries={history} />
           </TabsPanel>
         </Tabs>
       </div>

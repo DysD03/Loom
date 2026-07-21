@@ -18,6 +18,40 @@ export interface BuiltinSuite {
 const NUMERIC_SUFFIX = " End your reply with 'Answer: <number>'.";
 const MCQ_SUFFIX = " Respond with only the letter of the correct answer.";
 
+const PASSAGE_SENTENCES = [
+  "The relay station sat at the edge of the crater, its antenna array humming against the thin wind.",
+  "Every twelve minutes the ground team uploaded a fresh batch of telemetry corrections.",
+  "Storage bay two held the spare condensers, each wrapped in gray thermal foil.",
+  "A maintenance drone traced slow figure-eights above the solar farm, logging panel temperatures.",
+  "The shift log noted a minor pressure drift in line four, flagged for the morning crew.",
+  "Beyond the ridge, the survey team had staked out a grid of seismic sensors.",
+  "Rations for the quarter arrived early, stacked in blue crates beside the airlock.",
+  "The comms officer rehearsed the handover checklist twice before the window opened.",
+  "Dust filtered through the light like static as the outer door cycled.",
+  "By nightfall the reactor trimmed itself to standby and the corridors went quiet.",
+];
+
+/**
+ * Deterministic ~1,500-token passage for prompt-processing probes. The `seed`
+ * is woven into every section header so different tasks never share a prefix —
+ * otherwise the server's prompt cache would inflate the second measurement.
+ */
+function longPassage(seed: string): string {
+  const sections: string[] = [];
+  for (let i = 1; i <= 12; i++) {
+    const rotated = [...PASSAGE_SENTENCES.slice(i % 10), ...PASSAGE_SENTENCES.slice(0, i % 10)];
+    sections.push(`Log ${seed}-${i}: ${rotated.join(" ")}`);
+  }
+  return sections.join("\n\n");
+}
+
+const timing = (name: string, category: string, prompt: string): BenchTask => ({
+  name,
+  category,
+  prompt,
+  scoring: "timing",
+});
+
 const mcq = (name: string, question: string, expected: string): BenchTask => ({
   name,
   category: "knowledge",
@@ -115,6 +149,42 @@ export const BUILTIN_SUITES: BuiltinSuite[] = [
         scoring: "contains",
         expected: "help@loomapp.dev",
       },
+    ],
+  },
+  {
+    id: "builtin-performance",
+    name: "Speed & Latency",
+    description:
+      "Pure performance probes — time-to-first-token, generation speed, and prompt-processing throughput. No correctness scoring; repeated tasks average out noise.",
+    tasks: [
+      timing("Ping A", "latency", "Reply with only the word: pong"),
+      timing("Ping B", "latency", "Reply with only the word: echo"),
+      timing("Ping C", "latency", "Reply with only the word: ready"),
+      timing(
+        "Story sprint",
+        "generation",
+        "Write a vivid short story of about 250 words about a courier crossing a neon-lit city at midnight. Plain prose, no headings.",
+      ),
+      timing(
+        "Steady list",
+        "generation",
+        "Count from 1 to 120 as a comma-separated list on a single line.",
+      ),
+      timing(
+        "Long context A",
+        "prompt-processing",
+        `Read the following operations log, then reply with only the word: done\n\n${longPassage("alpha")}`,
+      ),
+      timing(
+        "Long context B",
+        "prompt-processing",
+        `Read the following operations log, then reply with only the word: done\n\n${longPassage("bravo")}`,
+      ),
+      timing(
+        "Balanced Q&A",
+        "balanced",
+        "Explain in exactly three sentences why the sky appears blue during the day.",
+      ),
     ],
   },
   {

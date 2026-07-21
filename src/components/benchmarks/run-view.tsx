@@ -2,14 +2,27 @@
 
 import { Fragment, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Ban, Check, CircleAlert, Loader2, Trophy, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Ban, Check, CircleAlert, Loader2, Trophy, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { BarChart, ChartLegend, seriesColor } from "@/components/dashboards/charts";
+import { CostPanel } from "./cost";
 import type { BenchmarkRunStatus } from "@/db/schema";
-import type { RunSummaryView, TaskCellView } from "@/lib/benchmark-score";
+import {
+  isTimingOnly,
+  type RunSummaryView,
+  type TaskCellView,
+  type TaskRowView,
+} from "@/lib/benchmark-score";
 import { cancelRunAction } from "@/app/benchmarks/actions";
 
 export interface RunViewData {
@@ -18,6 +31,27 @@ export interface RunViewData {
   suiteName: string;
   status: BenchmarkRunStatus;
   error: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface RunCostInfo {
+  perHour: number;
+  source: "snapshot" | "settings";
+}
+
+type TaskSort = { key: "task" | "category" | number; dir: 1 | -1 } | null;
+
+/** True when any completed cell of the row failed a check or errored. */
+function rowFailed(row: TaskRowView): boolean {
+  return row.cells.some(
+    (c) => c !== null && (c.error !== null || (!c.passed && !isTimingOnly(row.scoring))),
+  );
+}
+
+function rowAllPassed(row: TaskRowView): boolean {
+  const done = row.cells.filter((c): c is TaskCellView => c !== null);
+  return done.length > 0 && done.every((c) => c.passed && c.error === null);
 }
 
 const STATUS_BADGE: Record<BenchmarkRunStatus, { label: string; className: string }> = {
@@ -55,6 +89,13 @@ function CellMark({ cell, scoring }: { cell: TaskCellView | null; scoring: strin
   if (cell.error && cell.output === "") {
     return <CircleAlert className="text-neon-yellow mx-auto size-3.5" aria-label={cell.error} />;
   }
+  if (scoring === "timing") {
+    return (
+      <span className="text-neon-cyan text-xs" style={{ fontVariantNumeric: "tabular-nums" }}>
+        {(cell.latencyMs / 1000).toFixed(2)}s
+      </span>
+    );
+  }
   if (scoring === "judge") {
     return (
       <span className={cn("text-xs", cell.passed ? "text-neon-green" : "text-destructive")}>
@@ -69,10 +110,21 @@ function CellMark({ cell, scoring }: { cell: TaskCellView | null; scoring: strin
   );
 }
 
-export function RunView({ run, summary }: { run: RunViewData; summary: RunSummaryView }) {
+export function RunView({
+  run,
+  summary,
+  cost,
+}: {
+  run: RunViewData;
+  summary: RunSummaryView;
+  cost: RunCostInfo | null;
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [openTask, setOpenTask] = useState<number | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [outcomeFilter, setOutcomeFilter] = useState<"all" | "passed" | "failed">("all");
+  const [taskSort, setTaskSort] = useState<TaskSort>(null);
 
   const live = run.status === "running" || run.status === "pending";
   useEffect(() => {
@@ -88,7 +140,56 @@ export function RunView({ run, summary }: { run: RunViewData; summary: RunSummar
     .map((m, i) => ({ ...m, color: modelColors[i] }))
     .sort((a, b) => b.score - a.score);
   const progress = summary.total > 0 ? summary.completed / summary.total : 0;
+  const hasScored = summary.models.some((m) => m.scoredCompleted > 0);
   const hasTps = summary.models.some((m) => m.avgTokensPerSecond !== null);
+  const hasTtft = summary.models.some((m) => m.avgTtftMs !== null);
+  const hasPromptTps = summary.models.some((m) => m.avgPromptTokensPerSecond !== null);
+
+  const wallClockMs =
+    run.startedAt && run.finishedAt
+      ? Math.max(0, Date.parse(run.finishedAt) - Date.parse(run.startedAt))
+      : null;
+
+  const taskCategories = [...new Set(summary.tasks.map((t) => t.category))];
+  const visibleTasks = summary.tasks
+    .filter((t) => categoryFilter === "all" || t.category === categoryFilter)
+    .filter((t) =>
+      outcomeFilter === "all"
+        ? true
+        : outcomeFilter === "failed"
+          ? rowFailed(t)
+          : rowAllPassed(t),
+    );
+  if (taskSort) {
+    const value = (row: TaskRowView): string | number =>
+      taskSort.key === "task"
+        ? row.name.toLowerCase()
+        : taskSort.key === "category"
+          ? row.category.toLowerCase()
+          : (row.cells[taskSort.key]?.score ?? -1);
+    visibleTasks.sort((a, b) => {
+      const va = value(a);
+      const vb = value(b);
+      return (va < vb ? -1 : va > vb ? 1 : 0) * taskSort.dir;
+    });
+  }
+
+  function toggleTaskSort(key: "task" | "category" | number) {
+    setTaskSort((prev) =>
+      prev?.key === key
+        ? { key, dir: prev.dir === 1 ? -1 : 1 }
+        : { key, dir: typeof key === "number" ? -1 : 1 },
+    );
+  }
+
+  function sortIcon(key: "task" | "category" | number) {
+    if (taskSort?.key !== key) return null;
+    return taskSort.dir === 1 ? (
+      <ArrowUp className="size-3" />
+    ) : (
+      <ArrowDown className="size-3" />
+    );
+  }
 
   function cancel() {
     startTransition(async () => {
@@ -180,14 +281,21 @@ export function RunView({ run, summary }: { run: RunViewData; summary: RunSummar
                       </div>
                       <div className="flex shrink-0 items-baseline gap-4 text-right">
                         <p className="w-14 text-lg font-semibold tracking-tight">
-                          {Math.round(entry.score * 100)}%
+                          {entry.scoredCompleted > 0 ? `${Math.round(entry.score * 100)}%` : "—"}
                         </p>
                         <p className="text-muted-foreground hidden w-16 text-xs sm:block">
-                          {entry.passed}/{entry.completed} passed
+                          {entry.scoredCompleted > 0
+                            ? `${entry.passed}/${entry.scoredCompleted} passed`
+                            : `${entry.completed} timed`}
                         </p>
                         <p className="text-muted-foreground hidden w-14 text-xs md:block">
                           {entry.avgLatencyMs !== null
                             ? `${(entry.avgLatencyMs / 1000).toFixed(1)}s avg`
+                            : "—"}
+                        </p>
+                        <p className="text-muted-foreground hidden w-18 text-xs xl:block">
+                          {entry.avgTtftMs !== null
+                            ? `${(entry.avgTtftMs / 1000).toFixed(2)}s TTFT`
                             : "—"}
                         </p>
                         <p className="text-muted-foreground hidden w-16 text-xs lg:block">
@@ -207,20 +315,22 @@ export function RunView({ run, summary }: { run: RunViewData; summary: RunSummar
                   Comparison
                 </h2>
                 <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-                  <ChartCard title="Overall accuracy">
-                    <BarChart
-                      title="Overall accuracy"
-                      categories={labels}
-                      series={[
-                        {
-                          name: "Score",
-                          data: summary.models.map((m) => Math.round(m.score * 1000) / 10),
-                        },
-                      ]}
-                      unit="%"
-                      categoryColors={modelColors}
-                    />
-                  </ChartCard>
+                  {hasScored ? (
+                    <ChartCard title="Overall accuracy">
+                      <BarChart
+                        title="Overall accuracy"
+                        categories={labels}
+                        series={[
+                          {
+                            name: "Score",
+                            data: summary.models.map((m) => Math.round(m.score * 1000) / 10),
+                          },
+                        ]}
+                        unit="%"
+                        categoryColors={modelColors}
+                      />
+                    </ChartCard>
+                  ) : null}
 
                   {summary.categories.length > 1 ? (
                     <ChartCard
@@ -278,44 +388,160 @@ export function RunView({ run, summary }: { run: RunViewData; summary: RunSummar
                       />
                     </ChartCard>
                   ) : null}
+
+                  {hasTtft ? (
+                    <ChartCard title="Time to first token">
+                      <BarChart
+                        title="Time to first token"
+                        categories={labels}
+                        series={[
+                          {
+                            name: "TTFT",
+                            data: summary.models.map((m) =>
+                              m.avgTtftMs !== null ? Math.round(m.avgTtftMs / 10) / 100 : 0,
+                            ),
+                          },
+                        ]}
+                        unit="s"
+                        categoryColors={modelColors}
+                      />
+                    </ChartCard>
+                  ) : null}
+
+                  {hasPromptTps ? (
+                    <ChartCard title="Prompt processing">
+                      <BarChart
+                        title="Prompt processing"
+                        categories={labels}
+                        series={[
+                          {
+                            name: "Prompt speed",
+                            data: summary.models.map((m) =>
+                              m.avgPromptTokensPerSecond !== null
+                                ? Math.round(m.avgPromptTokensPerSecond)
+                                : 0,
+                            ),
+                          },
+                        ]}
+                        unit="tok/s"
+                        categoryColors={modelColors}
+                      />
+                    </ChartCard>
+                  ) : null}
                 </div>
               </section>
 
               <section className="space-y-2">
                 <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
                   <span className="bg-neon-cyan mr-2 inline-block h-2.5 w-0.5 align-[-1px]" />
-                  Task results
+                  Cost estimate
                   <span className="text-muted-foreground/70 ml-2 normal-case">
-                    (click a row to inspect outputs)
+                    (self-reported, not metered)
                   </span>
                 </h2>
+                <CostPanel
+                  models={summary.models.map((m, mi) => ({
+                    label: m.label,
+                    color: modelColors[mi],
+                    totalLatencyMs: m.totalLatencyMs,
+                    totalOutputTokens: m.totalOutputTokens,
+                    avgTokensPerSecond: m.avgTokensPerSecond,
+                  }))}
+                  rate={cost?.perHour ?? null}
+                  rateSource={cost?.source ?? null}
+                  wallClockMs={wallClockMs}
+                />
+              </section>
+
+              <section className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
+                    <span className="bg-neon-cyan mr-2 inline-block h-2.5 w-0.5 align-[-1px]" />
+                    Task results
+                    <span className="text-muted-foreground/70 ml-2 normal-case">
+                      (click a row to inspect outputs)
+                    </span>
+                  </h2>
+                  <div className="ml-auto flex items-center gap-2">
+                    <Select
+                      value={categoryFilter}
+                      onValueChange={(v) => v && setCategoryFilter(v)}
+                    >
+                      <SelectTrigger size="sm" className="w-36" aria-label="Filter by category">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All categories</SelectItem>
+                        {taskCategories.map((category) => (
+                          <SelectItem key={category} value={category}>
+                            {category}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={outcomeFilter}
+                      onValueChange={(v) =>
+                        v && setOutcomeFilter(v as "all" | "passed" | "failed")
+                      }
+                    >
+                      <SelectTrigger size="sm" className="w-28" aria-label="Filter by outcome">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All tasks</SelectItem>
+                        <SelectItem value="passed">Passed</SelectItem>
+                        <SelectItem value="failed">Failed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
                 <div className="bg-card/80 overflow-x-auto rounded-lg border">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b">
-                        <th className="text-muted-foreground px-3 py-2 text-left text-xs font-medium">
-                          Task
+                        <th className="px-3 py-2 text-left">
+                          <button
+                            type="button"
+                            onClick={() => toggleTaskSort("task")}
+                            className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs font-medium transition-colors"
+                          >
+                            Task {sortIcon("task")}
+                          </button>
                         </th>
-                        <th className="text-muted-foreground px-2 py-2 text-left text-xs font-medium">
-                          Category
+                        <th className="px-2 py-2 text-left">
+                          <button
+                            type="button"
+                            onClick={() => toggleTaskSort("category")}
+                            className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs font-medium transition-colors"
+                          >
+                            Category {sortIcon("category")}
+                          </button>
                         </th>
                         {summary.models.map((m, mi) => (
                           <th
                             key={m.model}
-                            className="text-muted-foreground max-w-28 truncate px-2 py-2 text-center text-xs font-medium"
-                            title={m.model}
+                            className="max-w-28 truncate px-2 py-2 text-center"
+                            title={`${m.model} — click to sort by score`}
                           >
-                            <span
-                              className="mr-1.5 inline-block size-2 rounded-full align-middle"
-                              style={{ background: modelColors[mi] }}
-                            />
-                            {m.label}
+                            <button
+                              type="button"
+                              onClick={() => toggleTaskSort(mi)}
+                              className="text-muted-foreground hover:text-foreground inline-flex max-w-full items-center gap-1 text-xs font-medium transition-colors"
+                            >
+                              <span
+                                className="inline-block size-2 shrink-0 rounded-full"
+                                style={{ background: modelColors[mi] }}
+                              />
+                              <span className="truncate">{m.label}</span>
+                              {sortIcon(mi)}
+                            </button>
                           </th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {summary.tasks.map((task) => (
+                      {visibleTasks.map((task) => (
                         <Fragment key={task.index}>
                           <tr
                             className={cn(
@@ -369,8 +595,14 @@ export function RunView({ run, summary }: { run: RunViewData; summary: RunSummar
                                             {summary.models[mi].label}
                                             <span className="text-muted-foreground font-normal">
                                               — {(cell.latencyMs / 1000).toFixed(1)}s
+                                              {cell.ttftMs
+                                                ? `, TTFT ${(cell.ttftMs / 1000).toFixed(2)}s`
+                                                : ""}
                                               {cell.tokensPerSecond
                                                 ? `, ${cell.tokensPerSecond.toFixed(1)} tok/s`
+                                                : ""}
+                                              {cell.promptTokensPerSecond
+                                                ? `, prompt ${Math.round(cell.promptTokensPerSecond)} tok/s`
                                                 : ""}
                                             </span>
                                           </p>
@@ -392,6 +624,16 @@ export function RunView({ run, summary }: { run: RunViewData; summary: RunSummar
                           ) : null}
                         </Fragment>
                       ))}
+                      {visibleTasks.length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={2 + summary.models.length}
+                            className="text-muted-foreground px-3 py-6 text-center text-xs"
+                          >
+                            No tasks match the current filters.
+                          </td>
+                        </tr>
+                      ) : null}
                     </tbody>
                   </table>
                 </div>

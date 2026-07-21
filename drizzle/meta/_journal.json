@@ -134,6 +134,13 @@
       "when": 1783933239531,
       "tag": "0018_thick_molten_man",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1784487151689,
+      "tag": "0019_rare_terror",
+      "breakpoints": true
     }
   ]
 }

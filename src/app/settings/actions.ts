@@ -15,6 +15,9 @@ export async function updateSettings(input: SettingsInput) {
     openaiApiKey: input.openaiApiKey.trim(),
     googleApiKey: input.googleApiKey.trim(),
     searxngUrl: input.searxngUrl.trim(),
+    computeCostPerHour: Number.isFinite(input.computeCostPerHour)
+      ? Math.max(0, input.computeCostPerHour)
+      : 0,
   });
   revalidatePath("/settings");
   return saved;

@@ -12,6 +12,7 @@ export const SCORING_KINDS = [
   "mcq",
   "json",
   "judge",
+  "timing",
 ] as const;
 
 export type ScoringKind = (typeof SCORING_KINDS)[number];
@@ -24,16 +25,23 @@ export const SCORING_LABELS: Record<ScoringKind, string> = {
   mcq: "Multiple choice (A–D)",
   json: "JSON match",
   judge: "AI judge (0–10)",
+  timing: "Timing only (no check)",
 };
+
+/** Tasks with this scoring are excluded from accuracy averages — only their timings count. */
+export const isTimingOnly = (scoring: ScoringKind): boolean => scoring === "timing";
 
 export interface BenchTask {
   name: string;
   category: string;
   prompt: string;
+  /** Extra user turns sent after the model answers `prompt`; the final reply is scored. */
+  followups?: string[];
   scoring: ScoringKind;
   /**
    * Reference for the scorer: the exact/contained text, the number, the regex
    * source, the MCQ letter, the JSON to match, or the judge's reference answer.
+   * Unused for "timing" tasks.
    */
   expected?: string;
 }
@@ -52,13 +60,22 @@ export interface ModelSummary {
   model: string;
   /** Unique display name (id without redundant path segments). */
   label: string;
-  /** Mean score over completed tasks, 0..1. */
+  /** Mean score over completed scored (non-timing) tasks, 0..1. */
   score: number;
+  /** Passed count over scored (non-timing) tasks. */
   passed: number;
+  /** Completed cells on scored (non-timing) tasks. */
+  scoredCompleted: number;
+  /** Completed cells across all tasks (drives run progress). */
   completed: number;
   errors: number;
   avgLatencyMs: number | null;
+  avgTtftMs: number | null;
   avgTokensPerSecond: number | null;
+  avgPromptTokensPerSecond: number | null;
+  /** Total request time across completed cells — the cost basis for this model. */
+  totalLatencyMs: number;
+  totalOutputTokens: number | null;
 }
 
 export interface CategorySummary {
@@ -72,7 +89,9 @@ export interface TaskCellView {
   score: number;
   passed: boolean;
   latencyMs: number;
+  ttftMs: number | null;
   tokensPerSecond: number | null;
+  promptTokensPerSecond: number | null;
   error: string | null;
 }
 
@@ -301,6 +320,9 @@ export function scoreDeterministic(task: BenchTask, output: string): TaskScore {
     }
     case "judge":
       return fail("Judge scoring requires a model.");
+    case "timing":
+      // Nothing to check — the run only records latency and throughput.
+      return { score: 1, passed: true };
   }
 }
 
@@ -313,4 +335,29 @@ export function modelLabels(models: string[]): string[] {
   return shorts.map((short, i) =>
     shorts.filter((s) => s === short).length > 1 ? models[i] : short,
   );
+}
+
+// --- cross-run history (computed server-side, rendered by the History tab) ---
+
+/** One model's aggregate for one run — a point in the over-time comparison. */
+export interface HistoryEntry {
+  runId: string;
+  runTitle: string;
+  suiteId: string | null;
+  suiteName: string;
+  status: string;
+  createdAt: string;
+  model: string;
+  /** Mean score 0..1 over scored tasks; null when the run had only timing tasks. */
+  score: number | null;
+  avgLatencyMs: number | null;
+  avgTtftMs: number | null;
+  avgTokensPerSecond: number | null;
+  avgPromptTokensPerSecond: number | null;
+  totalLatencyMs: number;
+  totalOutputTokens: number | null;
+  /** $/hour used for this run's estimate (snapshot, else current setting); null = none. */
+  costPerHour: number | null;
+  /** Self-reported estimate: totalLatencyMs × costPerHour. */
+  estimatedCost: number | null;
 }

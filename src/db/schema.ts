@@ -18,6 +18,11 @@ export const appSettings = sqliteTable("app_settings", {
   openaiApiKey: text("openai_api_key").notNull().default(""),
   googleApiKey: text("google_api_key").notNull().default(""),
   searxngUrl: text("searxng_url").notNull().default("http://localhost:8080"),
+  /**
+   * Self-reported cost of running this machine, in $ per hour (electricity /
+   * amortization). Powers the benchmark cost estimates; 0 means not configured.
+   */
+  computeCostPerHour: real("compute_cost_per_hour").notNull().default(0),
   updatedAt: text("updated_at")
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -432,6 +437,11 @@ export const benchmarkRuns = sqliteTable("benchmark_runs", {
     .default("pending"),
   /** Populated when status is "error". */
   error: text("error"),
+  /** Wall-clock bounds of the execution, for cost estimates. */
+  startedAt: text("started_at"),
+  finishedAt: text("finished_at"),
+  /** Snapshot of `app_settings.computeCostPerHour` at creation; null = no rate set. */
+  costPerHour: real("cost_per_hour"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -458,8 +468,14 @@ export const benchmarkResults = sqliteTable(
     score: real("score").notNull().default(0),
     passed: integer("passed", { mode: "boolean" }).notNull().default(false),
     latencyMs: integer("latency_ms").notNull().default(0),
+    /** Time to first streamed token (reasoning or text); null for legacy rows. */
+    ttftMs: integer("ttft_ms"),
     outputTokens: integer("output_tokens"),
+    promptTokens: integer("prompt_tokens"),
+    /** Generation speed: output tokens ÷ (total − TTFT). Legacy rows used total time. */
     tokensPerSecond: real("tokens_per_second"),
+    /** Prompt-processing speed: first-turn prompt tokens ÷ TTFT. */
+    promptTokensPerSecond: real("prompt_tokens_per_second"),
     /** Request/scoring failure for this cell, if any. */
     error: text("error"),
     createdAt: text("created_at")

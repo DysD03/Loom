@@ -19,6 +19,7 @@ export type SettingsInput = Pick<
   | "openaiApiKey"
   | "googleApiKey"
   | "searxngUrl"
+  | "computeCostPerHour"
 >;
 
 /** Returns the settings row, creating it with defaults on first access. */

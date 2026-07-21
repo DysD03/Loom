@@ -37,6 +37,7 @@ const emptyTask = (): SuiteTaskInput => ({
   name: "",
   category: "",
   prompt: "",
+  followups: [],
   scoring: "contains",
   expected: "",
 });
@@ -59,6 +60,7 @@ export function SuiteEditor({
           name: t.name,
           category: t.category,
           prompt: t.prompt,
+          followups: t.followups ?? [],
           scoring: t.scoring,
           expected: t.expected ?? "",
         }))
@@ -67,6 +69,16 @@ export function SuiteEditor({
 
   function patchTask(index: number, patch: Partial<SuiteTaskInput>) {
     setTasks((prev) => prev.map((task, i) => (i === index ? { ...task, ...patch } : task)));
+  }
+
+  function patchFollowup(index: number, turnIndex: number, value: string) {
+    setTasks((prev) =>
+      prev.map((task, i) =>
+        i === index
+          ? { ...task, followups: task.followups.map((f, fi) => (fi === turnIndex ? value : f)) }
+          : task,
+      ),
+    );
   }
 
   function save() {
@@ -156,17 +168,65 @@ export function SuiteEditor({
             <Textarea
               value={task.prompt}
               onChange={(e) => patchTask(i, { prompt: e.target.value })}
-              placeholder="The prompt sent to each model"
+              placeholder={
+                task.followups.length > 0 ? "Turn 1 — the opening prompt" : "The prompt sent to each model"
+              }
               className="min-h-16 font-mono text-xs"
               disabled={isPending}
             />
-            <Input
-              value={task.expected}
-              onChange={(e) => patchTask(i, { expected: e.target.value })}
-              placeholder={EXPECTED_PLACEHOLDER[task.scoring]}
-              className="h-8 font-mono text-xs"
-              disabled={isPending}
-            />
+            {task.followups.map((followup, fi) => (
+              <div key={fi} className="flex items-start gap-2">
+                <Textarea
+                  value={followup}
+                  onChange={(e) => patchFollowup(i, fi, e.target.value)}
+                  placeholder={`Turn ${fi + 2} — sent after the model replies`}
+                  className="min-h-12 flex-1 font-mono text-xs"
+                  disabled={isPending}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Remove turn ${fi + 2}`}
+                  onClick={() =>
+                    patchTask(i, { followups: task.followups.filter((_, ri) => ri !== fi) })
+                  }
+                  disabled={isPending}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </div>
+            ))}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => patchTask(i, { followups: [...task.followups, ""] })}
+                disabled={isPending}
+                className="text-muted-foreground h-7 gap-1 px-2 text-xs"
+              >
+                <Plus className="size-3" />
+                Add follow-up turn
+              </Button>
+              {task.followups.length > 0 ? (
+                <span className="text-muted-foreground text-xs">
+                  Multi-turn — only the final reply is scored.
+                </span>
+              ) : null}
+            </div>
+            {task.scoring === "timing" ? (
+              <p className="text-muted-foreground text-xs">
+                Timing only — no correctness check. Latency, TTFT, and tokens/sec are still
+                recorded.
+              </p>
+            ) : (
+              <Input
+                value={task.expected}
+                onChange={(e) => patchTask(i, { expected: e.target.value })}
+                placeholder={EXPECTED_PLACEHOLDER[task.scoring]}
+                className="h-8 font-mono text-xs"
+                disabled={isPending}
+              />
+            )}
           </div>
         ))}
       </div>

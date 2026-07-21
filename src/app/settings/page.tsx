@@ -36,6 +36,7 @@ export default function SettingsPage() {
               openaiApiKey: settings.openaiApiKey,
               googleApiKey: settings.googleApiKey,
               searxngUrl: settings.searxngUrl,
+              computeCostPerHour: settings.computeCostPerHour,
             }}
           />
           <McpServersCard

@@ -16,6 +16,8 @@ export interface SuiteTaskInput {
   name: string;
   category: string;
   prompt: string;
+  /** Extra user turns sent after the first reply (multi-turn benchmarks). */
+  followups: string[];
   scoring: string;
   expected: string;
 }
@@ -29,7 +31,7 @@ function validateTasks(tasks: SuiteTaskInput[]): { tasks: BenchTask[] } | { erro
       ? (task.scoring as ScoringKind)
       : "contains";
     const expected = task.expected.trim();
-    if (!expected && scoring !== "judge") {
+    if (!expected && scoring !== "judge" && scoring !== "timing") {
       return { error: `Task ${i + 1} needs an expected value for ${scoring} scoring.` };
     }
     if (scoring === "regex") {
@@ -46,10 +48,12 @@ function validateTasks(tasks: SuiteTaskInput[]): { tasks: BenchTask[] } | { erro
         return { error: `Task ${i + 1}: expected value is not valid JSON.` };
       }
     }
+    const followups = task.followups.map((t) => t.trim()).filter(Boolean);
     cleaned.push({
       name: task.name.trim() || `Task ${i + 1}`,
       category: task.category.trim().toLowerCase() || "custom",
       prompt,
+      followups: followups.length > 0 ? followups : undefined,
       scoring,
       expected: expected || undefined,
     });
