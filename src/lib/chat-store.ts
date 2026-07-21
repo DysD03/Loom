@@ -34,6 +34,8 @@ export function getChatInstance(opts: {
   api: string;
   body: Record<string, unknown>;
   initialMessages: UIMessage[];
+  /** Auto-resubmit predicate (e.g. after tool approvals — Email assistant). */
+  sendAutomaticallyWhen?: (options: { messages: UIMessage[] }) => boolean;
 }): Chat<UIMessage> {
   const existing = registry.get(opts.id);
   if (existing) {
@@ -43,6 +45,7 @@ export function getChatInstance(opts: {
     id: opts.id,
     messages: opts.initialMessages,
     transport: new DefaultChatTransport({ api: opts.api, body: opts.body }),
+    sendAutomaticallyWhen: opts.sendAutomaticallyWhen,
   });
   registry.set(opts.id, chat);
   return chat;

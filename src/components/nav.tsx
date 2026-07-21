@@ -16,6 +16,7 @@ import {
   FlaskConical,
   LayoutDashboard,
   Gauge,
+  Mail,
   type LucideIcon,
 } from "lucide-react";
 
@@ -29,6 +30,7 @@ interface NavItem {
 
 const primaryItems: NavItem[] = [
   { href: "/", label: "Chat", icon: MessageSquare },
+  { href: "/email", label: "Email", icon: Mail },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/research", label: "Deep Research", icon: Telescope },
   { href: "/experimental", label: "Experimental Agent", icon: FlaskConical },

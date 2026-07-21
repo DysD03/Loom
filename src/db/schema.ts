@@ -487,6 +487,56 @@ export const benchmarkResults = sqliteTable(
 
 export type BenchmarkResult = typeof benchmarkResults.$inferSelect;
 
+/**
+ * The connected Gmail account (single row, id 1). Holds the user-supplied
+ * OAuth client (from their own Google Cloud project), the tokens minted by the
+ * consent flow, and the connected address. Everything stays in the local
+ * SQLite DB — tokens are only ever sent to Google's own endpoints.
+ */
+export const gmailAccount = sqliteTable("gmail_account", {
+  id: integer("id").primaryKey().default(1),
+  clientId: text("client_id").notNull().default(""),
+  clientSecret: text("client_secret").notNull().default(""),
+  /** Address of the connected account; empty until the consent flow completes. */
+  email: text("email").notNull().default(""),
+  refreshToken: text("refresh_token").notNull().default(""),
+  accessToken: text("access_token").notNull().default(""),
+  /** Unix ms when `accessToken` expires (auto-refreshed before use). */
+  accessTokenExpiresAt: integer("access_token_expires_at").notNull().default(0),
+  /** Scopes actually granted at consent time. */
+  scope: text("scope").notNull().default(""),
+  /** CSRF state for an in-flight OAuth round-trip ("uuid.timestampMs"). */
+  oauthState: text("oauth_state"),
+  connectedAt: text("connected_at"),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`(current_timestamp)`),
+});
+
+export type GmailAccount = typeof gmailAccount.$inferSelect;
+
+/**
+ * Cached LLM summaries of Gmail threads, keyed by thread + its newest message
+ * so a new reply naturally invalidates the cache.
+ */
+export const emailSummaries = sqliteTable(
+  "email_summaries",
+  {
+    id: text("id").primaryKey(),
+    threadId: text("thread_id").notNull(),
+    /** Newest message id in the thread at summarize time. */
+    lastMessageId: text("last_message_id").notNull().default(""),
+    summary: text("summary").notNull().default(""),
+    model: text("model").notNull().default(""),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(current_timestamp)`),
+  },
+  (t) => [index("email_summaries_thread_idx").on(t.threadId, t.lastMessageId)],
+);
+
+export type EmailSummary = typeof emailSummaries.$inferSelect;
+
 /** An MCP server entry managed from the Settings page. */
 export const mcpServers = sqliteTable("mcp_servers", {
   id: text("id").primaryKey(),

@@ -50,6 +50,7 @@ The philosophy is simple: **your data, your machine, your model.** The app is a 
 Tabs (built phase by phase — see `PLAN.md`):
 
 - **Chat** — streaming conversational chat
+- **Email** — connect your **Gmail** (via your own Google OAuth client — tokens never leave the local DB): triage the inbox, read threads safely, get **AI thread summaries** and an **unread digest**, reply with an **AI-drafted composer**, and hand goals to an **email assistant** that plans multi-email tasks and executes them with tools — every send pauses for your explicit approval
 - **Agents** — chat that calls tools (built-in + MCP) in an agent loop
 - **Deep Research** — plan → search (SearXNG) → read → **cited report**, with live staged progress and a numbered source list matching the inline `[n]` citations
 - **Experimental Agent** — bidirectional goal-convergence search (Forward + Backward agents + Reconciler) that meets in the middle to stitch a START → GOAL path, **grounded in live SearXNG + Firecrawl** evidence; auto-builds a Canvas of the taken path, or recommends alternatives when no path is found (see above)
@@ -110,7 +111,6 @@ docker run -d --name loom -p 3000:3000 \
   loom
 ```
 
-**Point Loom at your LLM:** the model server (LM Studio / Ollama) runs on the
 **Why a named volume and not `./data`?** SQLite runs in WAL mode, which needs
 shared-memory mmap on the database file. Host bind mounts on Docker Desktop
 (Windows/macOS) don't support it, so `-v "$PWD/data:/app/data"` fails with
@@ -127,6 +127,7 @@ docker compose start loom
 (Copy only `loom.db` — leave the `-wal`/`-shm` sidecar files behind; stopping the
 container first checkpoints them into the main file.)
 
+**Point Loom at your LLM:** the model server (LM Studio / Ollama) runs on the
 **host**, not in the container, so `localhost` won't reach it from inside. In
 **Settings → Base URL**, use `host.docker.internal` instead:
 
@@ -324,14 +325,36 @@ The **Documents** tab is a local retrieval-augmented-generation knowledge base. 
 
 > Documents need an **embeddings model** set in Settings (e.g. `nomic-embed-text` / `text-embedding-*`) to be searchable. Without one, files are still uploaded and chunked but won't be retrieved — the tab shows a notice when no embeddings model is configured.
 
+## Email (Gmail)
+
+The **Email** tab connects Loom to your Gmail so the local model can help you triage, summarize, and answer real mail. Loom talks to the Gmail API directly with an OAuth client **you** create — tokens live in the local SQLite DB, and mail content is only ever sent to whatever model you configured.
+
+- **Inbox** — Inbox / Unread / Sent / All views, full Gmail search syntax (`from:`, `is:unread`, `newer_than:7d`, …), pagination, and unread markers. Opening a thread marks it read; archive and mark-unread are one click.
+- **Safe reading** — messages render as plain text by default; HTML mail opens in a fully sandboxed frame (no scripts) with remote images **blocked until you allow them** (bye, tracking pixels). Attachments download through Loom.
+- **Summaries** — one click summarizes a thread (cached until new mail arrives, re-runnable), and the ✨ digest button streams a briefing of your unread mail grouped into *needs a reply / worth reading / low priority*.
+- **Replies** — a composer with reply / reply-all and an **AI draft** button (plus an optional guidance field) that streams a ready-to-edit reply. Sends are proper Gmail replies — same thread, correct `In-Reply-To`/`References` headers.
+- **Assistant** — a docked email agent with tools (`searchEmails`, `readThread`, `sendReply`, `archiveThread`, `markThreadRead`). Give it a goal — *"find everything that needs a reply this week, make a plan, and draft the answers"* — and it states a numbered plan, executes it, and proposes replies. **Every send pauses for your approval**: you see the exact text and approve or deny it. Archive/read changes run freely; nothing is ever deleted.
+
+### Gmail setup (one-time, ~5 minutes)
+
+Loom ships no shared Google credentials — you use your own free OAuth client:
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a project and enable the **Gmail API**.
+2. Configure the **OAuth consent screen** (External) and add your own address as a test user. Note: apps left in *Testing* status get refresh tokens that expire after 7 days — publish the app to **Production** (the "unverified app" warning is fine to click through; you're its only user) for a permanent connection.
+3. Create **Credentials → OAuth client ID → Web application**, and register the exact redirect URI the Email tab shows you (e.g. `http://localhost:3000/api/gmail/oauth/callback`).
+4. Paste the client id + secret into the Email tab, **Save**, then **Connect Google account**.
+
+Scope requested: `gmail.modify` — read, send, archive, and mark read/unread; it cannot permanently delete mail. **Disconnect** in the tab header wipes the stored tokens.
+
 ## Project layout
 
 ```
 src/
-  app/            # routes: / (Chat), /agents, /research, /experimental, /canvas, /opencode, /editor, /documents, /memory, /settings
+  app/            # routes: / (Chat), /email, /agents, /research, /experimental, /canvas, /opencode, /editor, /documents, /memory, /settings
     api/
       chat/       # streaming chat route (tools + memory + document injection)
       agent/      # agent route: multi-step tool loop, capability-gated tools
+      gmail/      # Email tab: OAuth start/callback, threads/thread/send/modify/attachment, summarize/draft/assistant
       bidirectional/  # Experimental Agent: NDJSON run stream + poll/cancel (SearXNG + Firecrawl grounding)
       editor/     # doc-aware assistant chat for the Editor tab
       documents/  # multipart upload → parse → chunk → embed → store
