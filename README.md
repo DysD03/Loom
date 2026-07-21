@@ -94,7 +94,7 @@ npm run dev          # http://localhost:3000
 
 Loom ships a multi-stage `Dockerfile` and a `docker-compose.yml`. Migrations are
 applied automatically on container start, and the SQLite DB + uploaded documents
-are persisted to the host via the `./data` volume.
+are persisted in the `loom-data` volume.
 
 ```bash
 docker compose up -d --build   # build + run, http://localhost:3000
@@ -105,12 +105,28 @@ Or with plain Docker:
 ```bash
 docker build -t loom .
 docker run -d --name loom -p 3000:3000 \
-  -v "$PWD/data:/app/data" \
+  -v loom-data:/app/data \
   --add-host host.docker.internal:host-gateway \
   loom
 ```
 
 **Point Loom at your LLM:** the model server (LM Studio / Ollama) runs on the
+**Why a named volume and not `./data`?** SQLite runs in WAL mode, which needs
+shared-memory mmap on the database file. Host bind mounts on Docker Desktop
+(Windows/macOS) don't support it, so `-v "$PWD/data:/app/data"` fails with
+`disk I/O error` on the first write. A named volume lives in the Linux VM's own
+filesystem, where WAL works. To move an existing DB in or out:
+
+```bash
+docker compose stop loom
+docker cp ./data/loom.db loom:/app/data/loom.db   # host → container
+docker cp loom:/app/data/loom.db ./data/loom.db   # container → host
+docker compose start loom
+```
+
+(Copy only `loom.db` — leave the `-wal`/`-shm` sidecar files behind; stopping the
+container first checkpoints them into the main file.)
+
 **host**, not in the container, so `localhost` won't reach it from inside. In
 **Settings → Base URL**, use `host.docker.internal` instead:
 

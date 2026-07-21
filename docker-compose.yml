@@ -3,12 +3,19 @@ services:
     build: .
     image: loom
     container_name: loom
+    # Reap the child processes Loom spawns (MCP stdio servers, OpenCode).
+    init: true
     ports:
       - "3000:3000"
     volumes:
-      # Persist the SQLite DB + uploaded documents across rebuilds.
-      - ./data:/app/data
+      # The SQLite DB + uploaded documents. This is a *named* volume on purpose:
+      # SQLite's WAL mode needs shared-memory mmap, which host bind mounts on
+      # Docker Desktop (Windows/macOS) can't provide — pointing this at ./data
+      # gets you "disk I/O error" on the first write. See README → Run with Docker
+      # for moving an existing ./data/loom.db in and out.
+      - loom-data:/app/data
       # Optional: declare MCP servers via a file (see README → MCP servers).
+      # The file must already exist on the host, or Docker creates a directory.
       # - ./mcp.json:/app/mcp.json:ro
     # Lets the container reach an LLM server (LM Studio / Ollama) running on the
     # host. In Loom's Settings, set the Base URL to e.g.
@@ -19,3 +26,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+
+volumes:
+  loom-data:

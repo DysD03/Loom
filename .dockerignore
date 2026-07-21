@@ -10,8 +10,11 @@ data
 # VCS & tooling
 .git
 .gitignore
+.gitattributes
 .vscode
 .idea
+.claude
+tsconfig.tsbuildinfo
 
 # Env & secrets
 .env*
