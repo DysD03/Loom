@@ -6,7 +6,13 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { EmbeddingModel, LanguageModel, UIMessage } from "ai";
 
-import { CLOUD_PROVIDERS, type CloudProvider, parseModel } from "./models";
+import {
+  CLOUD_PROVIDERS,
+  parseModel,
+  type AvailableProviders,
+  type CloudProvider,
+  type LocalProvider,
+} from "./models";
 import { getSettings } from "./settings";
 import type { AppSettings } from "@/db/schema";
 
@@ -19,12 +25,66 @@ export interface ModelOptions {
   fetch?: typeof globalThis.fetch;
 }
 
-/** Builds the local OpenAI-compatible provider (LM Studio / Ollama / …) from settings. */
-function localProvider(settings: AppSettings, options?: ModelOptions) {
+/** Connection details for one of the local OpenAI-compatible endpoints. */
+export interface LocalEndpoint {
+  provider: LocalProvider;
+  label: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
+/** True once the second local endpoint has a base URL configured. */
+export function ollamaConfigured(settings: AppSettings): boolean {
+  return settings.ollamaBaseUrl.trim() !== "";
+}
+
+/** Resolves one local endpoint's connection details from settings. */
+export function localEndpoint(
+  settings: AppSettings,
+  provider: LocalProvider = "local",
+): LocalEndpoint {
+  if (provider === "ollama") {
+    return {
+      provider,
+      label: "Ollama",
+      baseUrl: settings.ollamaBaseUrl.trim(),
+      apiKey: settings.ollamaApiKey.trim() || "ollama",
+    };
+  }
+  return {
+    provider,
+    label: "LM Studio",
+    baseUrl: settings.llmBaseUrl.trim(),
+    apiKey: settings.llmApiKey.trim() || "lm-studio",
+  };
+}
+
+/** Every local endpoint that is actually configured, primary first. */
+export function localEndpoints(settings: AppSettings): LocalEndpoint[] {
+  const endpoints = [localEndpoint(settings, "local")];
+  if (ollamaConfigured(settings)) endpoints.push(localEndpoint(settings, "ollama"));
+  return endpoints.filter((e) => e.baseUrl !== "");
+}
+
+/** What `parseModel` needs to resolve prefixes against this install's config. */
+export function availableProviders(settings: AppSettings): AvailableProviders {
+  return {
+    clouds: configuredCloudProviders(settings),
+    ollama: ollamaConfigured(settings),
+  };
+}
+
+/** Builds an OpenAI-compatible provider for one of the local endpoints. */
+function localProvider(
+  settings: AppSettings,
+  provider: LocalProvider = "local",
+  options?: ModelOptions,
+) {
+  const endpoint = localEndpoint(settings, provider);
   return createOpenAICompatible({
-    name: "local",
-    baseURL: settings.llmBaseUrl,
-    apiKey: settings.llmApiKey || "lm-studio",
+    name: endpoint.provider,
+    baseURL: endpoint.baseUrl,
+    apiKey: endpoint.apiKey,
     fetch: options?.fetch,
   });
 }
@@ -81,10 +141,13 @@ function cloudChatModel(
 export function getChatModel(modelOverride?: string | null, options?: ModelOptions) {
   const settings = getSettings();
   const raw = (modelOverride && modelOverride.trim()) || settings.llmModel.trim();
-  const { provider, modelId } = parseModel(raw, configuredCloudProviders(settings));
+  const { provider, modelId } = parseModel(raw, availableProviders(settings));
 
-  if (provider === "local") {
-    return { model: localProvider(settings, options).chatModel(modelId), modelId };
+  if (provider === "local" || provider === "ollama") {
+    return {
+      model: localProvider(settings, provider, options).chatModel(modelId),
+      modelId,
+    };
   }
 
   return { model: cloudChatModel(settings, provider, modelId, options), modelId };
@@ -109,12 +172,16 @@ export function getUtilityModel(fallbackOverride?: string | null) {
  */
 export function getEmbeddingModel(): { model: EmbeddingModel; modelId: string } | null {
   const settings = getSettings();
-  const modelId = settings.embeddingsModel.trim();
-  if (!modelId) {
+  const raw = settings.embeddingsModel.trim();
+  if (!raw) {
     return null;
   }
 
-  return { model: localProvider(settings).embeddingModel(modelId), modelId };
+  // An `ollama/`-prefixed id embeds on the second endpoint; anything else on the
+  // primary one. Cloud embeddings stay out of scope.
+  const { provider, modelId } = parseModel(raw, availableProviders(settings));
+  const local: LocalProvider = provider === "ollama" ? "ollama" : "local";
+  return { model: localProvider(settings, local).embeddingModel(modelId), modelId };
 }
 
 /** Concatenates the text parts of a UI message into a plain string. */

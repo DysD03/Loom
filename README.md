@@ -45,7 +45,7 @@ A dedicated performance pass keeps Loom feeling instant, even with a large knowl
 
 **Loom** is a single, self-hosted workspace that wraps your local model (via LM Studio, Ollama, or any OpenAI-compatible server) in everything you'd actually want around it: streaming chat, a tool-using agent loop, deep research with cited reports, a visual idea canvas, a real coding agent, a personal knowledge base your model can read, and a memory that learns durable facts about you. It's built for people who want the convenience of a polished AI workspace without sending a single token to the cloud.
 
-The philosophy is simple: **your data, your machine, your model.** The app is a Next.js full-stack project backed by a local SQLite database — point it at a model, and every feature works entirely offline. Switching from LM Studio to Ollama (or any other OpenAI-compatible backend) is a base-URL change in Settings, nothing more. It was built phase by phase (see `PLAN.md`), and each capability lives on its own tab:
+The philosophy is simple: **your data, your machine, your model.** The app is a Next.js full-stack project backed by a local SQLite database — point it at a model, and every feature works entirely offline. Switching from LM Studio to Ollama (or any other OpenAI-compatible backend) is a base-URL change in Settings, nothing more — and you can run **both at once**, addressing the second server's models with an `ollama/` prefix. It was built phase by phase (see `PLAN.md`), and each capability lives on its own tab:
 
 Tabs (built phase by phase — see `PLAN.md`):
 
@@ -154,6 +154,27 @@ file and the `--add-host` flag above make it work on Linux too.)
 3. Click **Test connection** — you should see a success toast with the model name.
 
 Switching backends is a **base-URL change only** — no code changes.
+
+### Running two local servers at once
+
+You don't have to choose. **Settings → Second local server** takes a second
+OpenAI-compatible base URL (Ollama's `http://localhost:11434/v1` by default), and
+both servers stay connected at the same time:
+
+- The primary server owns plain model ids (`qwen2.5-7b-instruct`); the second
+  server's models are prefixed **`ollama/`** (`ollama/llama3.2:3b`). Existing
+  model ids keep working untouched — nothing is re-pointed.
+- Both servers' models appear together in every model picker, so you can chat on
+  one and run background tasks on the other (set a `ollama/…` **utility model**),
+  or **benchmark them head to head** in a single run.
+- Each card has its own **Test connection** button. The second one doesn't need a
+  model selected first — it asks the server which models it has.
+- Leave the second base URL empty to turn it off. A server that is down never
+  blocks the other: the model list degrades to whichever endpoint answered.
+
+Both endpoints are queried in parallel, and the chat context meter reads context
+length from whichever server owns the model (LM Studio's `/api/v0/models`,
+Ollama's `/api/show`).
 
 > **Tool calling:** Agents, MCP, and Deep Research need a model that supports function/tool calling (e.g. Qwen2.5, Llama 3.1+). Those tabs will warn and fall back to plain chat if the configured model can't call tools.
 

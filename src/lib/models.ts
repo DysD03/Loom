@@ -13,8 +13,16 @@
 export const CLOUD_PROVIDERS = ["anthropic", "openai", "google"] as const;
 export type CloudProvider = (typeof CLOUD_PROVIDERS)[number];
 
-/** "local" is the configured OpenAI-compatible endpoint (LM Studio / Ollama / …). */
-export type ProviderKind = CloudProvider | "local";
+/**
+ * The two local OpenAI-compatible endpoints. `local` is the primary one (LM
+ * Studio by default) and owns every unprefixed id, so ids stored before a
+ * second endpoint existed keep resolving exactly as they did; `ollama` is the
+ * optional second server, addressed by an explicit `ollama/` prefix.
+ */
+export const LOCAL_PROVIDERS = ["local", "ollama"] as const;
+export type LocalProvider = (typeof LOCAL_PROVIDERS)[number];
+
+export type ProviderKind = CloudProvider | LocalProvider;
 
 export interface ParsedModel {
   provider: ProviderKind;
@@ -28,6 +36,15 @@ const PREFIXES: Record<CloudProvider, string> = {
   google: "google/",
 };
 
+const OLLAMA_PREFIX = "ollama/";
+
+/** Which optional providers are actually configured, for prefix resolution. */
+export interface AvailableProviders {
+  clouds?: readonly CloudProvider[];
+  /** True once a second local endpoint has a base URL. */
+  ollama?: boolean;
+}
+
 /**
  * Splits a stored model string into its provider and bare id.
  *
@@ -39,9 +56,17 @@ const PREFIXES: Record<CloudProvider, string> = {
  */
 export function parseModel(
   value: string,
-  configuredClouds: readonly CloudProvider[] = CLOUD_PROVIDERS,
+  available: AvailableProviders = {},
 ): ParsedModel {
   const trimmed = value.trim();
+  const configuredClouds = available.clouds ?? CLOUD_PROVIDERS;
+
+  // Same collision rule as the cloud prefixes: only claim "ollama/…" when that
+  // endpoint exists, so the string stays a plain local id otherwise.
+  if (available.ollama && trimmed.startsWith(OLLAMA_PREFIX)) {
+    return { provider: "ollama", modelId: trimmed.slice(OLLAMA_PREFIX.length) };
+  }
+
   for (const provider of CLOUD_PROVIDERS) {
     const prefix = PREFIXES[provider];
     if (!trimmed.startsWith(prefix)) {
@@ -58,6 +83,15 @@ export function parseModel(
 /** Builds the stored model string for a cloud model. */
 export function cloudModelId(provider: CloudProvider, modelId: string): string {
   return `${PREFIXES[provider]}${modelId}`;
+}
+
+/** Builds the stored model string for a model served by the second local endpoint. */
+export function ollamaModelId(modelId: string): string {
+  return `${OLLAMA_PREFIX}${modelId}`;
+}
+
+export function isOllamaModelId(value: string): boolean {
+  return value.trim().startsWith(OLLAMA_PREFIX);
 }
 
 export interface CatalogEntry {
@@ -120,7 +154,8 @@ function isCuratedCloudId(id: string): boolean {
 }
 
 export const PROVIDER_LABELS: Record<ProviderKind, string> = {
-  local: "Local",
+  local: "LM Studio",
+  ollama: "Ollama",
   anthropic: "Anthropic",
   openai: "OpenAI",
   google: "Google",

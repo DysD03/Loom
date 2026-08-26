@@ -21,6 +21,7 @@ Local-first web UI for a local LLM. Next.js full-stack app, runs entirely on loc
 - OpenAI-compatible API via configurable **base URL** (stored in DB `settings`).
 - Defaults: LM Studio `http://localhost:1234/v1`, dummy API key, model + embeddings model set in Settings.
 - Switching to Ollama (`http://localhost:11434/v1`) must be a **base-URL change only** — no code changes.
+- **Two local endpoints run side by side.** `llmBaseUrl` is the primary (LM Studio) and owns unprefixed model ids; `ollamaBaseUrl` is an optional second server whose models are addressed with an `ollama/` prefix. Empty `ollamaBaseUrl` = disabled. Resolve both through `parseModel` + `localEndpoint`/`localEndpoints` in `lib/provider.ts` — never read `llmBaseUrl` directly when a model string is in hand.
 - Tool calling: Agents/Research/MCP require a tool-capable model. If the model lacks tool support, **warn clearly and degrade to plain chat** — never fail silently.
 
 ## Conventions

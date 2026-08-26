@@ -29,6 +29,8 @@ export default function SettingsPage() {
             initial={{
               llmBaseUrl: settings.llmBaseUrl,
               llmApiKey: settings.llmApiKey,
+              ollamaBaseUrl: settings.ollamaBaseUrl,
+              ollamaApiKey: settings.ollamaApiKey,
               llmModel: settings.llmModel,
               utilityModel: settings.utilityModel,
               embeddingsModel: settings.embeddingsModel,

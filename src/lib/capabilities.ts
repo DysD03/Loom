@@ -1,7 +1,7 @@
 import "server-only";
 
 import { parseModel } from "./models";
-import { configuredCloudProviders } from "./provider";
+import { availableProviders, localEndpoint } from "./provider";
 import { getSettings } from "./settings";
 
 export interface ToolSupport {
@@ -43,7 +43,7 @@ export async function checkToolSupport(
 ): Promise<ToolSupport> {
   const settings = getSettings();
   const raw = (modelOverride && modelOverride.trim()) || settings.llmModel.trim();
-  const { provider, modelId: model } = parseModel(raw, configuredCloudProviders(settings));
+  const { provider, modelId: model } = parseModel(raw, availableProviders(settings));
 
   if (!model) {
     return {
@@ -54,11 +54,13 @@ export async function checkToolSupport(
   }
 
   // Cloud providers (Anthropic / OpenAI / Google) all support tool calling.
-  if (provider !== "local") {
+  if (provider !== "local" && provider !== "ollama") {
     return { supported: true, checked: true };
   }
 
-  const baseUrl = settings.llmBaseUrl.replace(/\/+$/, "");
+  // Probe the endpoint that actually serves this model, not just the primary one.
+  const endpoint = localEndpoint(settings, provider);
+  const baseUrl = endpoint.baseUrl.replace(/\/+$/, "");
   const key = `${baseUrl}|${model}`;
 
   const cached = g.__toolSupportCache;
@@ -66,7 +68,7 @@ export async function checkToolSupport(
     return cached.result;
   }
 
-  const result = await probe(baseUrl, settings.llmApiKey, model);
+  const result = await probe(baseUrl, endpoint.apiKey, model);
   g.__toolSupportCache = { key, result, expires: Date.now() + TTL_MS };
   return result;
 }

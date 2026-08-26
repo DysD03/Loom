@@ -10,6 +10,13 @@ export const appSettings = sqliteTable("app_settings", {
   llmBaseUrl: text("llm_base_url").notNull().default("http://localhost:1234/v1"),
   llmApiKey: text("llm_api_key").notNull().default("lm-studio"),
   llmModel: text("llm_model").notNull().default(""),
+  /**
+   * Second local OpenAI-compatible endpoint, addressed by an `ollama/` model
+   * prefix. Empty means not configured, so the app behaves exactly as it did
+   * with a single local server until a URL is filled in.
+   */
+  ollamaBaseUrl: text("ollama_base_url").notNull().default(""),
+  ollamaApiKey: text("ollama_api_key").notNull().default("ollama"),
   /** Small model for background tasks (titles, memory extraction, canvas seeding, suggestions). Empty = use llmModel. */
   utilityModel: text("utility_model").notNull().default(""),
   embeddingsModel: text("embeddings_model").notNull().default(""),

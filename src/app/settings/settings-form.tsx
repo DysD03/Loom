@@ -67,7 +67,8 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
     initial.computeCostPerHour > 0 ? String(initial.computeCostPerHour) : "",
   );
   const [isSaving, startSaving] = useTransition();
-  const [isTesting, setIsTesting] = useState(false);
+  /** Which endpoint has a test in flight, if any. */
+  const [testing, setTesting] = useState<"local" | "ollama" | null>(null);
 
   const setField = (key: TextSettingKey) => (value: string) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -87,17 +88,27 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
     });
   }
 
-  async function handleTest() {
-    setIsTesting(true);
+  /**
+   * Pings one endpoint with the values currently in the form, so a connection can
+   * be verified before saving. The secondary endpoint has no model field of its
+   * own — the ping picks the server's first model in that case.
+   */
+  async function handleTest(endpoint: "local" | "ollama") {
+    const baseUrl = endpoint === "ollama" ? form.ollamaBaseUrl : form.llmBaseUrl;
+    const apiKey = endpoint === "ollama" ? form.ollamaApiKey : form.llmApiKey;
+    const model = endpoint === "ollama" ? "" : form.llmModel;
+
+    if (!baseUrl.trim()) {
+      toast.error("Add a base URL first");
+      return;
+    }
+
+    setTesting(endpoint);
     try {
       const res = await fetch("/api/llm/ping", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          baseUrl: form.llmBaseUrl,
-          apiKey: form.llmApiKey,
-          model: form.llmModel,
-        }),
+        body: JSON.stringify({ baseUrl, apiKey, model }),
       });
       const data: PingResult = await res.json();
       if (data.ok) {
@@ -112,7 +123,7 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      setIsTesting(false);
+      setTesting(null);
     }
   }
 
@@ -120,11 +131,11 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle>Local LLM</CardTitle>
+          <CardTitle>Local LLM — LM Studio</CardTitle>
           <CardDescription>
-            OpenAI-compatible endpoint. Defaults target LM Studio. To use Ollama, just
-            change the base URL to{" "}
-            <code className="bg-muted rounded px-1">http://localhost:11434/v1</code>.
+            Your primary OpenAI-compatible endpoint; defaults target LM Studio. Models here
+            are addressed by their plain id. A second local server can be added below and
+            run at the same time.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -186,8 +197,70 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
             <Button onClick={handleSave} disabled={isSaving}>
               {isSaving ? "Saving…" : "Save"}
             </Button>
-            <Button variant="secondary" onClick={handleTest} disabled={isTesting}>
-              {isTesting ? "Testing…" : "Test connection"}
+            <Button
+              variant="secondary"
+              onClick={() => handleTest("local")}
+              disabled={testing !== null}
+            >
+              {testing === "local" ? "Testing…" : "Test connection"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Second local server — Ollama</CardTitle>
+          <CardDescription>
+            Optional. Point this at a second OpenAI-compatible server and both run side by
+            side: its models appear in every model picker prefixed with{" "}
+            <code className="bg-muted rounded px-1">ollama/</code>, so you can chat with one,
+            benchmark them against each other, or use one as the utility model. Leave the base
+            URL empty to disable it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Field
+            id="ollamaBaseUrl"
+            label="Base URL"
+            placeholder="http://localhost:11434/v1"
+            hint="Ollama serves its OpenAI-compatible API on port 11434. Any other compatible server works here too."
+            value={form.ollamaBaseUrl}
+            onChange={setField("ollamaBaseUrl")}
+            warning={
+              missingV1(form.ollamaBaseUrl) ? (
+                <span className="flex flex-wrap items-center gap-1.5">
+                  This usually ends in <code className="bg-muted rounded px-1">/v1</code> —
+                  without it the server logs “unexpected endpoint”.
+                  <button
+                    type="button"
+                    onClick={() => setField("ollamaBaseUrl")(withV1(form.ollamaBaseUrl))}
+                    className="hover:text-foreground underline underline-offset-2"
+                  >
+                    Append /v1
+                  </button>
+                </span>
+              ) : null
+            }
+          />
+          <Field
+            id="ollamaApiKey"
+            label="API key"
+            hint="Ollama ignores this — a dummy value is fine."
+            value={form.ollamaApiKey}
+            onChange={setField("ollamaApiKey")}
+          />
+          <Separator />
+          <div className="flex items-center gap-3">
+            <Button onClick={handleSave} disabled={isSaving}>
+              {isSaving ? "Saving…" : "Save"}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => handleTest("ollama")}
+              disabled={testing !== null || !form.ollamaBaseUrl.trim()}
+            >
+              {testing === "ollama" ? "Testing…" : "Test connection"}
             </Button>
           </div>
         </CardContent>
