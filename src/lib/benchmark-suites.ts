@@ -32,17 +32,18 @@ const PASSAGE_SENTENCES = [
 ];
 
 /**
- * Deterministic ~1,500-token passage for prompt-processing probes. The `seed`
- * is woven into every section header so different tasks never share a prefix —
- * otherwise the server's prompt cache would inflate the second measurement.
+ * Deterministic passage for prompt-processing probes, roughly 125 tokens per
+ * section. The `seed` is woven into every section header so different tasks
+ * never share a prefix — otherwise the server's prompt cache would inflate the
+ * second measurement.
  */
-function longPassage(seed: string): string {
-  const sections: string[] = [];
-  for (let i = 1; i <= 12; i++) {
+function longPassage(seed: string, sections = 12): string {
+  const out: string[] = [];
+  for (let i = 1; i <= sections; i++) {
     const rotated = [...PASSAGE_SENTENCES.slice(i % 10), ...PASSAGE_SENTENCES.slice(0, i % 10)];
-    sections.push(`Log ${seed}-${i}: ${rotated.join(" ")}`);
+    out.push(`Log ${seed}-${i}: ${rotated.join(" ")}`);
   }
-  return sections.join("\n\n");
+  return out.join("\n\n");
 }
 
 const timing = (name: string, category: string, prompt: string): BenchTask => ({
@@ -51,6 +52,14 @@ const timing = (name: string, category: string, prompt: string): BenchTask => ({
   prompt,
   scoring: "timing",
 });
+
+/** A prompt-evaluation probe: a lot of input, one word of output. */
+const prefillProbe = (name: string, seed: string, sections: number): BenchTask =>
+  timing(
+    name,
+    "prefill",
+    `Read the following operations log, then reply with only the word: done\n\n${longPassage(seed, sections)}`,
+  );
 
 const mcq = (name: string, question: string, expected: string): BenchTask => ({
   name,
@@ -155,31 +164,33 @@ export const BUILTIN_SUITES: BuiltinSuite[] = [
     id: "builtin-performance",
     name: "Speed & Latency",
     description:
-      "Pure performance probes — time-to-first-token, generation speed, and prompt-processing throughput. No correctness scoring; repeated tasks average out noise.",
+      "Pure performance probes, one phase at a time: near-empty prompts for the latency floor, growing prompts for prefill throughput, and long answers for decode speed and stutter. No correctness scoring; repeated probes average out noise.",
     tasks: [
+      // Tiny prompt, tiny answer — whatever time is left is overhead, not compute.
       timing("Ping A", "latency", "Reply with only the word: pong"),
       timing("Ping B", "latency", "Reply with only the word: echo"),
       timing("Ping C", "latency", "Reply with only the word: ready"),
+      // Growing prompts, one-word answers — time scales with prompt evaluation.
+      prefillProbe("Prefill 500", "alpha", 4),
+      prefillProbe("Prefill 1.5K", "bravo", 12),
+      prefillProbe("Prefill 3K", "delta", 24),
+      // Tiny prompts, long answers — time scales with generation.
       timing(
-        "Story sprint",
-        "generation",
+        "Decode burst",
+        "decode",
         "Write a vivid short story of about 250 words about a courier crossing a neon-lit city at midnight. Plain prose, no headings.",
       ),
       timing(
+        "Decode sustained",
+        "decode",
+        "Write about 500 words of plain prose describing a night shift at a remote weather station. No headings, no lists, no summary.",
+      ),
+      timing(
         "Steady list",
-        "generation",
+        "decode",
         "Count from 1 to 120 as a comma-separated list on a single line.",
       ),
-      timing(
-        "Long context A",
-        "prompt-processing",
-        `Read the following operations log, then reply with only the word: done\n\n${longPassage("alpha")}`,
-      ),
-      timing(
-        "Long context B",
-        "prompt-processing",
-        `Read the following operations log, then reply with only the word: done\n\n${longPassage("bravo")}`,
-      ),
+      // A realistic mix, so the profile is not built only from extremes.
       timing(
         "Balanced Q&A",
         "balanced",

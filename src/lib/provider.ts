@@ -10,12 +10,22 @@ import { CLOUD_PROVIDERS, type CloudProvider, parseModel } from "./models";
 import { getSettings } from "./settings";
 import type { AppSettings } from "@/db/schema";
 
+/**
+ * Per-call model options. `fetch` lets a caller wrap the HTTP request — the
+ * benchmark executor uses it to timestamp dispatch and first response byte, so
+ * it can split time-to-first-token into encode / queue / prefill.
+ */
+export interface ModelOptions {
+  fetch?: typeof globalThis.fetch;
+}
+
 /** Builds the local OpenAI-compatible provider (LM Studio / Ollama / …) from settings. */
-function localProvider(settings: AppSettings) {
+function localProvider(settings: AppSettings, options?: ModelOptions) {
   return createOpenAICompatible({
     name: "local",
     baseURL: settings.llmBaseUrl,
     apiKey: settings.llmApiKey || "lm-studio",
+    fetch: options?.fetch,
   });
 }
 
@@ -50,15 +60,16 @@ function cloudChatModel(
   settings: AppSettings,
   provider: CloudProvider,
   modelId: string,
+  options?: ModelOptions,
 ): LanguageModel {
-  const apiKey = cloudApiKey(settings, provider);
+  const config = { apiKey: cloudApiKey(settings, provider), fetch: options?.fetch };
   if (provider === "anthropic") {
-    return createAnthropic({ apiKey })(modelId);
+    return createAnthropic(config)(modelId);
   }
   if (provider === "openai") {
-    return createOpenAI({ apiKey })(modelId);
+    return createOpenAI(config)(modelId);
   }
-  return createGoogleGenerativeAI({ apiKey })(modelId);
+  return createGoogleGenerativeAI(config)(modelId);
 }
 
 /**
@@ -67,16 +78,16 @@ function cloudChatModel(
  * the configured local OpenAI-compatible endpoint. Returns the resolved model id
  * so callers can report which model ran.
  */
-export function getChatModel(modelOverride?: string | null) {
+export function getChatModel(modelOverride?: string | null, options?: ModelOptions) {
   const settings = getSettings();
   const raw = (modelOverride && modelOverride.trim()) || settings.llmModel.trim();
   const { provider, modelId } = parseModel(raw, configuredCloudProviders(settings));
 
   if (provider === "local") {
-    return { model: localProvider(settings).chatModel(modelId), modelId };
+    return { model: localProvider(settings, options).chatModel(modelId), modelId };
   }
 
-  return { model: cloudChatModel(settings, provider, modelId), modelId };
+  return { model: cloudChatModel(settings, provider, modelId, options), modelId };
 }
 
 /**

@@ -17,12 +17,15 @@ import { getChatModel, getUtilityModel } from "./provider";
 import { getSettings } from "./settings";
 import { costOfMs } from "./benchmark-cost";
 import {
+  describe,
   isTimingOnly,
   modelLabels,
+  percentile,
   scoreDeterministic,
   type BenchTask,
   type CategorySummary,
   type HistoryEntry,
+  type LatencyPhases,
   type ModelSummary,
   type RunSummaryView,
   type TaskCellView,
@@ -225,24 +228,36 @@ interface ResultInput {
   passed: boolean;
   latencyMs: number;
   ttftMs?: number | null;
+  phases?: LatencyPhases | null;
+  interTokenP50Ms?: number | null;
+  interTokenP95Ms?: number | null;
+  streamChunks?: number | null;
   outputTokens?: number | null;
   promptTokens?: number | null;
   tokensPerSecond?: number | null;
-  promptTokensPerSecond?: number | null;
+  prefillTokensPerSecond?: number | null;
   error?: string | null;
 }
 
 function insertResult(input: ResultInput): void {
+  const { phases, ...rest } = input;
   db.insert(benchmarkResults)
     .values({
       id: randomUUID(),
-      ...input,
+      ...rest,
       output: input.output.slice(0, OUTPUT_STORE_MAX),
       ttftMs: input.ttftMs ?? null,
+      encodeMs: phases ? Math.round(phases.encode) : null,
+      queueMs: phases ? Math.round(phases.queue) : null,
+      prefillMs: phases ? Math.round(phases.prefill) : null,
+      decodeMs: phases ? Math.round(phases.decode) : null,
+      interTokenP50Ms: input.interTokenP50Ms ?? null,
+      interTokenP95Ms: input.interTokenP95Ms ?? null,
+      streamChunks: input.streamChunks ?? null,
       outputTokens: input.outputTokens ?? null,
       promptTokens: input.promptTokens ?? null,
       tokensPerSecond: input.tokensPerSecond ?? null,
-      promptTokensPerSecond: input.promptTokensPerSecond ?? null,
+      prefillTokensPerSecond: input.prefillTokensPerSecond ?? null,
       error: input.error ?? null,
     })
     .run();
@@ -285,40 +300,94 @@ interface TaskMetrics {
   finalText: string;
   latencyMs: number;
   ttftMs: number | null;
+  /** encode + queue + prefill + decode, summed over turns; adds up to `latencyMs`. */
+  phases: LatencyPhases | null;
   promptTokens: number | null;
   outputTokens: number | null;
   tokensPerSecond: number | null;
-  promptTokensPerSecond: number | null;
+  prefillTokensPerSecond: number | null;
+  interTokenP50Ms: number | null;
+  interTokenP95Ms: number | null;
+  streamChunks: number;
+}
+
+/** Timestamps written by the instrumented fetch of a single request. */
+interface RequestProbe {
+  /** When the HTTP request left the app (the prompt is serialized by then). */
+  dispatchedAt: number | null;
+  /** When the response headers arrived — the server has taken the work. */
+  respondedAt: number | null;
 }
 
 /**
- * Streams every turn of a task against a model, timing time-to-first-token
- * (first reasoning or text delta). Generation speed counts only post-TTFT time;
- * prompt-processing speed comes from the first turn alone, because follow-up
- * turns usually hit the server's prefix cache and would flatter the number.
+ * A fetch that timestamps the request boundary. On an SDK retry the later
+ * attempt overwrites the earlier one, which is what we want: the phases then
+ * describe the attempt that actually produced the answer.
  */
-async function streamTask(model: LanguageModel, task: BenchTask): Promise<TaskMetrics> {
+function probingFetch(probe: RequestProbe): typeof globalThis.fetch {
+  return async (input, init) => {
+    probe.dispatchedAt = Date.now();
+    const response = await globalThis.fetch(input, init);
+    probe.respondedAt = Date.now();
+    return response;
+  };
+}
+
+/** Builds a model bound to one request probe; a fresh probe per turn. */
+type ModelFactory = (probe: RequestProbe) => LanguageModel;
+
+/** Minimum inter-token gaps before the p50/p95 pair is worth reporting. */
+const MIN_ITL_SAMPLES = 4;
+
+const addPhases = (a: LatencyPhases, b: LatencyPhases): LatencyPhases => ({
+  encode: a.encode + b.encode,
+  queue: a.queue + b.queue,
+  prefill: a.prefill + b.prefill,
+  decode: a.decode + b.decode,
+});
+
+/**
+ * Streams every turn of a task, splitting each request into four measured phases
+ * that sum to its wall clock:
+ *
+ * - **encode** — `streamText` call → request dispatched: message conversion and
+ *   JSON serialization, all client-side.
+ * - **queue** — dispatch → response headers: transport plus the server accepting
+ *   and queueing the request.
+ * - **prefill** — headers → first output token: the server evaluating the prompt.
+ * - **decode** — first output token → end of the response.
+ *
+ * Generation speed counts decode time only; prefill throughput comes from the
+ * first turn alone, because follow-up turns usually hit the server's prefix
+ * cache and would flatter the number. Inter-token gaps are pooled across turns.
+ */
+async function streamTask(factory: ModelFactory, task: BenchTask): Promise<TaskMetrics> {
   const turns = [task.prompt, ...(task.followups ?? [])].map((t) => t.trim()).filter(Boolean);
   if (turns.length === 0) throw new Error("Task has no prompt.");
 
   const messages: ModelMessage[] = [];
   const transcript: string[] = [];
+  const gaps: number[] = [];
   let finalText = "";
   let latencyMs = 0;
-  let generationMs = 0;
+  let phases: LatencyPhases = { encode: 0, queue: 0, prefill: 0, decode: 0 };
+  let anyPhases = false;
   let ttftMs: number | null = null;
   let promptTokens: number | null = null;
   let outputTokens: number | null = null;
-  let promptTokensPerSecond: number | null = null;
+  let prefillTokensPerSecond: number | null = null;
+  let streamChunks = 0;
 
   for (const [turnIndex, turn] of turns.entries()) {
     messages.push({ role: "user", content: turn });
+    const probe: RequestProbe = { dispatchedAt: null, respondedAt: null };
     const startedAt = Date.now();
     let firstTokenAt: number | null = null;
+    let lastChunkAt: number | null = null;
     let text = "";
 
     const result = streamText({
-      model,
+      model: factory(probe),
       system: BENCH_SYSTEM,
       messages,
       maxOutputTokens: 2_048,
@@ -326,11 +395,13 @@ async function streamTask(model: LanguageModel, task: BenchTask): Promise<TaskMe
       onError: () => {}, // surfaced as an error part in the loop below
     });
     for await (const part of result.fullStream) {
-      if (part.type === "text-delta") {
-        firstTokenAt ??= Date.now();
-        text += part.text;
-      } else if (part.type === "reasoning-delta") {
-        firstTokenAt ??= Date.now();
+      if (part.type === "text-delta" || part.type === "reasoning-delta") {
+        const now = Date.now();
+        if (firstTokenAt === null) firstTokenAt = now;
+        else if (lastChunkAt !== null) gaps.push(now - lastChunkAt);
+        lastChunkAt = now;
+        streamChunks++;
+        if (part.type === "text-delta") text += part.text;
       } else if (part.type === "abort") {
         throw new Error(`Timed out after ${TASK_TIMEOUT_MS / 1000}s.`);
       } else if (part.type === "error") {
@@ -342,13 +413,35 @@ async function streamTask(model: LanguageModel, task: BenchTask): Promise<TaskMe
     const turnLatency = Date.now() - startedAt;
     const turnTtft = firstTokenAt !== null ? firstTokenAt - startedAt : null;
     latencyMs += turnLatency;
-    generationMs += turnLatency - (turnTtft ?? 0);
-    if (turnIndex === 0) {
-      ttftMs = turnTtft;
-      if (usage.inputTokens !== undefined && turnTtft !== null && turnTtft > 0) {
-        promptTokensPerSecond = usage.inputTokens / (turnTtft / 1000);
+
+    if (turnTtft !== null && firstTokenAt !== null) {
+      // Clamp both boundaries inside the turn, so the four phases stay
+      // non-negative and still add up to the turn's wall clock.
+      const dispatchedAt = Math.min(probe.dispatchedAt ?? startedAt, firstTokenAt);
+      const respondedAt = Math.min(
+        Math.max(probe.respondedAt ?? dispatchedAt, dispatchedAt),
+        firstTokenAt,
+      );
+      const encode = dispatchedAt - startedAt;
+      const queue = respondedAt - dispatchedAt;
+      const turnPhases: LatencyPhases = {
+        encode,
+        queue,
+        prefill: turnTtft - encode - queue,
+        decode: turnLatency - turnTtft,
+      };
+      phases = addPhases(phases, turnPhases);
+      anyPhases = true;
+      if (turnIndex === 0) {
+        ttftMs = turnTtft;
+        if (usage.inputTokens !== undefined && turnPhases.prefill >= 1) {
+          prefillTokensPerSecond = usage.inputTokens / (turnPhases.prefill / 1000);
+        }
       }
+    } else if (turnIndex === 0) {
+      ttftMs = turnTtft;
     }
+
     if (usage.inputTokens !== undefined) promptTokens = (promptTokens ?? 0) + usage.inputTokens;
     if (usage.outputTokens !== undefined) outputTokens = (outputTokens ?? 0) + usage.outputTokens;
 
@@ -357,17 +450,20 @@ async function streamTask(model: LanguageModel, task: BenchTask): Promise<TaskMe
     messages.push({ role: "assistant", content: text });
   }
 
-  const generationSeconds = (generationMs > 0 ? generationMs : latencyMs) / 1000;
+  const decodeSeconds = (anyPhases && phases.decode > 0 ? phases.decode : latencyMs) / 1000;
   return {
     output: transcript.join("\n\n"),
     finalText,
     latencyMs,
     ttftMs,
+    phases: anyPhases ? phases : null,
     promptTokens,
     outputTokens,
-    tokensPerSecond:
-      outputTokens && generationSeconds > 0 ? outputTokens / generationSeconds : null,
-    promptTokensPerSecond,
+    tokensPerSecond: outputTokens && decodeSeconds > 0 ? outputTokens / decodeSeconds : null,
+    prefillTokensPerSecond,
+    interTokenP50Ms: gaps.length >= MIN_ITL_SAMPLES ? percentile(gaps, 0.5) : null,
+    interTokenP95Ms: gaps.length >= MIN_ITL_SAMPLES ? percentile(gaps, 0.95) : null,
+    streamChunks,
   };
 }
 
@@ -395,10 +491,14 @@ export async function executeRun(runId: string): Promise<void> {
 
   try {
     for (const modelName of models) {
-      let built: { model: ReturnType<typeof getChatModel>["model"] } | { error: string };
+      // Resolve once to surface configuration errors, then rebuild per turn so
+      // every request carries its own timing probe.
+      let built: { factory: ModelFactory } | { error: string };
       try {
-        const { model, modelId } = getChatModel(modelName);
-        built = modelId ? { model } : { error: "Empty model id." };
+        const { modelId } = getChatModel(modelName);
+        built = modelId
+          ? { factory: (probe) => getChatModel(modelName, { fetch: probingFetch(probe) }).model }
+          : { error: "Empty model id." };
       } catch (err) {
         built = { error: err instanceof Error ? err.message : "Failed to build the model." };
       }
@@ -424,7 +524,7 @@ export async function executeRun(runId: string): Promise<void> {
         const task = tasks[i];
         const startedAt = Date.now();
         try {
-          const metrics = await streamTask(built.model, task);
+          const metrics = await streamTask(built.factory, task);
           const scored =
             task.scoring === "judge"
               ? await judgeOutput(task, metrics.finalText).catch(
@@ -444,10 +544,14 @@ export async function executeRun(runId: string): Promise<void> {
             passed: scored.passed,
             latencyMs: metrics.latencyMs,
             ttftMs: metrics.ttftMs,
+            phases: metrics.phases,
+            interTokenP50Ms: metrics.interTokenP50Ms,
+            interTokenP95Ms: metrics.interTokenP95Ms,
+            streamChunks: metrics.streamChunks,
             outputTokens: metrics.outputTokens,
             promptTokens: metrics.promptTokens,
             tokensPerSecond: metrics.tokensPerSecond,
-            promptTokensPerSecond: metrics.promptTokensPerSecond,
+            prefillTokensPerSecond: metrics.prefillTokensPerSecond,
             error: scored.error ?? null,
           });
         } catch (err) {
@@ -483,14 +587,69 @@ export async function executeRun(runId: string): Promise<void> {
 const mean = (values: number[]): number | null =>
   values.length > 0 ? values.reduce((sum, v) => sum + v, 0) / values.length : null;
 
+const positives = (values: (number | null)[]): number[] =>
+  values.filter((v): v is number => v !== null && v > 0);
+
+const sumOrNull = (values: (number | null)[]): number | null => {
+  const present = values.filter((v): v is number => v !== null);
+  return present.length > 0 ? present.reduce((sum, v) => sum + v, 0) : null;
+};
+
+/** Reads the four phase columns off a row; null unless all four were recorded. */
+function rowPhases(r: BenchmarkResult): LatencyPhases | null {
+  const { encodeMs, queueMs, prefillMs, decodeMs } = r;
+  if (encodeMs === null || queueMs === null || prefillMs === null || decodeMs === null) {
+    return null;
+  }
+  return { encode: encodeMs, queue: queueMs, prefill: prefillMs, decode: decodeMs };
+}
+
+/** Mean ms per phase across the rows that recorded a split; null when none did. */
+function averagePhases(rows: BenchmarkResult[]): LatencyPhases | null {
+  const split = rows.map(rowPhases).filter((p): p is LatencyPhases => p !== null);
+  if (split.length === 0) return null;
+  const avg = (pick: (p: LatencyPhases) => number) =>
+    split.reduce((sum, p) => sum + pick(p), 0) / split.length;
+  return {
+    encode: avg((p) => p.encode),
+    queue: avg((p) => p.queue),
+    prefill: avg((p) => p.prefill),
+    decode: avg((p) => p.decode),
+  };
+}
+
+/**
+ * Time per output token: total decode time ÷ total output tokens, over the rows
+ * that have both. The reciprocal of decode throughput, in the units a reader
+ * feels ("~24 ms between tokens").
+ */
+function tpotMs(rows: BenchmarkResult[]): number | null {
+  let decode = 0;
+  let tokens = 0;
+  for (const r of rows) {
+    if (r.decodeMs === null || r.outputTokens === null || r.outputTokens <= 0) continue;
+    decode += r.decodeMs;
+    tokens += r.outputTokens;
+  }
+  return tokens > 0 ? decode / tokens : null;
+}
+
+/** Aggregates the per-cell inter-token gaps into one median/tail pair. */
+function interTokenSummary(rows: BenchmarkResult[]): { p50: number; p95: number } | null {
+  const p50 = positives(rows.map((r) => r.interTokenP50Ms));
+  if (p50.length === 0) return null;
+  const p95 = positives(rows.map((r) => r.interTokenP95Ms));
+  return { p50: mean(p50) ?? 0, p95: mean(p95) ?? mean(p50) ?? 0 };
+}
+
 /** Builds the full comparison view (leaderboard, categories, task matrix) for a run. */
 export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): RunSummaryView {
   const models = loadModels(run);
   const tasks = loadTasks(run);
   const labels = modelLabels(models);
-  const byKey = new Map(results.map((r) => [`${r.model} ${r.taskIndex}`, r]));
+  const byKey = new Map(results.map((r) => [`${r.model} ${r.taskIndex}`, r]));
   const cell = (model: string, taskIndex: number): TaskCellView | null => {
-    const r = byKey.get(`${model} ${taskIndex}`);
+    const r = byKey.get(`${model} ${taskIndex}`);
     if (!r) return null;
     return {
       output: r.output,
@@ -499,7 +658,12 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
       latencyMs: r.latencyMs,
       ttftMs: r.ttftMs,
       tokensPerSecond: r.tokensPerSecond,
-      promptTokensPerSecond: r.promptTokensPerSecond,
+      prefillTokensPerSecond: r.prefillTokensPerSecond,
+      phases: rowPhases(r),
+      interTokenP50Ms: r.interTokenP50Ms,
+      interTokenP95Ms: r.interTokenP95Ms,
+      promptTokens: r.promptTokens,
+      outputTokens: r.outputTokens,
       error: r.error,
     };
   };
@@ -514,16 +678,15 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
     cells: models.map((m) => cell(m, index)),
   }));
 
-  const positives = (values: (number | null)[]): number[] =>
-    values.filter((v): v is number => v !== null && v > 0);
-
   const modelSummaries: ModelSummary[] = models.map((model, mi) => {
     const rows = results.filter((r) => r.model === model);
     const scored = rows.filter((r) => {
       const scoring = tasks[r.taskIndex]?.scoring;
       return scoring !== undefined && !isTimingOnly(scoring);
     });
-    const withOutputTokens = rows.filter((r) => r.outputTokens !== null);
+    const latency = describe(positives(rows.map((r) => r.latencyMs)));
+    const ttft = describe(positives(rows.map((r) => r.ttftMs)));
+    const decodeSpeed = describe(positives(rows.map((r) => r.tokensPerSecond)));
     return {
       model,
       label: labels[mi],
@@ -532,15 +695,19 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
       scoredCompleted: scored.length,
       completed: rows.length,
       errors: rows.filter((r) => r.error !== null).length,
-      avgLatencyMs: mean(positives(rows.map((r) => r.latencyMs))),
-      avgTtftMs: mean(positives(rows.map((r) => r.ttftMs))),
-      avgTokensPerSecond: mean(positives(rows.map((r) => r.tokensPerSecond))),
-      avgPromptTokensPerSecond: mean(positives(rows.map((r) => r.promptTokensPerSecond))),
+      avgLatencyMs: latency?.mean ?? null,
+      avgTtftMs: ttft?.mean ?? null,
+      avgTokensPerSecond: decodeSpeed?.mean ?? null,
+      avgPrefillTokensPerSecond: mean(positives(rows.map((r) => r.prefillTokensPerSecond))),
       totalLatencyMs: rows.reduce((sum, r) => sum + r.latencyMs, 0),
-      totalOutputTokens:
-        withOutputTokens.length > 0
-          ? withOutputTokens.reduce((sum, r) => sum + (r.outputTokens ?? 0), 0)
-          : null,
+      totalOutputTokens: sumOrNull(rows.map((r) => r.outputTokens)),
+      totalPromptTokens: sumOrNull(rows.map((r) => r.promptTokens)),
+      phases: averagePhases(rows),
+      latency,
+      ttft,
+      decodeSpeed,
+      interToken: interTokenSummary(rows),
+      avgTpotMs: tpotMs(rows),
     };
   });
 
@@ -598,9 +765,14 @@ export function historyView(): HistoryEntry[] {
         avgLatencyMs: m.avgLatencyMs,
         avgTtftMs: m.avgTtftMs,
         avgTokensPerSecond: m.avgTokensPerSecond,
-        avgPromptTokensPerSecond: m.avgPromptTokensPerSecond,
+        avgPrefillTokensPerSecond: m.avgPrefillTokensPerSecond,
+        phases: m.phases,
+        avgTpotMs: m.avgTpotMs,
+        p95LatencyMs: m.latency?.p95 ?? null,
+        latencyCv: m.latency !== null && m.latency.count > 1 ? m.latency.cv : null,
         totalLatencyMs: m.totalLatencyMs,
         totalOutputTokens: m.totalOutputTokens,
+        totalPromptTokens: m.totalPromptTokens,
         costPerHour: rate,
         estimatedCost: rate !== null ? costOfMs(m.totalLatencyMs, rate) : null,
       });

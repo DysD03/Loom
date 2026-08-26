@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { ChartLegend, LineChart, seriesColor } from "@/components/dashboards/charts";
 import { modelLabels, type HistoryEntry } from "@/lib/benchmark-score";
 import { formatUsd } from "@/lib/benchmark-cost";
+import { Dumbbell, type RangeRow } from "./charts";
 import {
   Select,
   SelectContent,
@@ -16,10 +17,117 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-type SortKey = "date" | "run" | "suite" | "model" | "score" | "ttft" | "tps" | "cost";
+type SortKey =
+  | "date"
+  | "run"
+  | "suite"
+  | "model"
+  | "score"
+  | "ttft"
+  | "prefill"
+  | "tps"
+  | "tpot"
+  | "p95"
+  | "cost";
 
 /** Numeric-first columns open descending (best/newest on top); text columns ascending. */
 const DEFAULT_DESC: SortKey[] = ["date", "score", "tps", "cost"];
+
+/** A metric that can be trended across runs. */
+interface TrendMetric {
+  key: string;
+  label: string;
+  unit: string;
+  /** True when a drop between runs is an improvement. */
+  lowerIsBetter: boolean;
+  pick: (entry: HistoryEntry) => number | null;
+}
+
+const round = (value: number, places = 1): number => {
+  const factor = 10 ** places;
+  return Math.round(value * factor) / factor;
+};
+
+const TREND_METRICS: TrendMetric[] = [
+  {
+    key: "score",
+    label: "Accuracy",
+    unit: "%",
+    lowerIsBetter: false,
+    pick: (e) => (e.score !== null ? round(e.score * 100) : null),
+  },
+  {
+    key: "tps",
+    label: "Decode speed",
+    unit: "tok/s",
+    lowerIsBetter: false,
+    pick: (e) => (e.avgTokensPerSecond !== null ? round(e.avgTokensPerSecond) : null),
+  },
+  {
+    key: "prefillTps",
+    label: "Prefill throughput",
+    unit: "tok/s",
+    lowerIsBetter: false,
+    pick: (e) =>
+      e.avgPrefillTokensPerSecond !== null ? round(e.avgPrefillTokensPerSecond) : null,
+  },
+  {
+    key: "ttft",
+    label: "Time to first token",
+    unit: "ms",
+    lowerIsBetter: true,
+    pick: (e) => (e.avgTtftMs !== null ? round(e.avgTtftMs, 0) : null),
+  },
+  {
+    key: "prefill",
+    label: "Prefill time",
+    unit: "ms",
+    lowerIsBetter: true,
+    pick: (e) => (e.phases !== null ? round(e.phases.prefill, 0) : null),
+  },
+  {
+    key: "decode",
+    label: "Decode time",
+    unit: "ms",
+    lowerIsBetter: true,
+    pick: (e) => (e.phases !== null ? round(e.phases.decode, 0) : null),
+  },
+  {
+    key: "tpot",
+    label: "Time per output token",
+    unit: "ms",
+    lowerIsBetter: true,
+    pick: (e) => (e.avgTpotMs !== null ? round(e.avgTpotMs, 2) : null),
+  },
+  {
+    key: "latency",
+    label: "Response time (mean)",
+    unit: "ms",
+    lowerIsBetter: true,
+    pick: (e) => (e.avgLatencyMs !== null ? round(e.avgLatencyMs, 0) : null),
+  },
+  {
+    key: "p95",
+    label: "Response time (p95)",
+    unit: "ms",
+    lowerIsBetter: true,
+    pick: (e) => (e.p95LatencyMs !== null ? round(e.p95LatencyMs, 0) : null),
+  },
+  {
+    key: "cv",
+    label: "Response spread",
+    unit: "%",
+    lowerIsBetter: true,
+    pick: (e) => (e.latencyCv !== null ? round(e.latencyCv * 100) : null),
+  },
+  {
+    key: "cost",
+    label: "Estimated cost",
+    unit: "$",
+    lowerIsBetter: true,
+    pick: (e) => (e.estimatedCost !== null ? round(e.estimatedCost, 4) : null),
+  },
+];
 
 function parseDbDate(value: string): Date {
   return new Date(value.includes("T") ? value : `${value.replace(" ", "T")}Z`);
@@ -50,8 +158,14 @@ function sortValue(entry: HistoryEntry, key: SortKey): string | number {
       return entry.score ?? -1;
     case "ttft":
       return entry.avgTtftMs ?? -1;
+    case "prefill":
+      return entry.phases?.prefill ?? -1;
     case "tps":
       return entry.avgTokensPerSecond ?? -1;
+    case "tpot":
+      return entry.avgTpotMs ?? -1;
+    case "p95":
+      return entry.p95LatencyMs ?? -1;
     case "cost":
       return entry.estimatedCost ?? -1;
   }
@@ -118,33 +232,42 @@ function buildChart(
   };
 }
 
-function HistoryChartCard({
+function ChartCard({
   title,
-  chart,
-  unit,
+  hint,
+  legend,
+  children,
 }: {
   title: string;
-  chart: { categories: string[]; series: { name: string; data: number[] }[] };
-  unit: string;
+  hint?: string;
+  legend?: React.ReactNode;
+  children: React.ReactNode;
 }) {
   return (
     <div className="bg-card/80 min-w-0 rounded-lg border p-4">
       <div className="mb-3 space-y-1.5">
         <h3 className="text-sm font-medium">{title}</h3>
-        <ChartLegend
-          series={chart.series.map((s, i) => ({ name: s.name, color: seriesColor(i) }))}
-        />
+        {hint ? (
+          <p className="text-muted-foreground text-xs leading-relaxed">{hint}</p>
+        ) : null}
+        {legend}
       </div>
-      <LineChart title={title} categories={chart.categories} series={chart.series} unit={unit} />
+      {children}
     </div>
   );
 }
+
+const numeric = { fontVariantNumeric: "tabular-nums" } as const;
 
 export function BenchmarkHistory({ entries }: { entries: HistoryEntry[] }) {
   const router = useRouter();
   const [suiteFilter, setSuiteFilter] = useState("all");
   const [modelFilter, setModelFilter] = useState("all");
-  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "date", dir: -1 });
+  const [metricKey, setMetricKey] = useState(TREND_METRICS[0].key);
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({
+    key: "date",
+    dir: -1,
+  });
 
   if (entries.length === 0) {
     return (
@@ -159,37 +282,55 @@ export function BenchmarkHistory({ entries }: { entries: HistoryEntry[] }) {
   const allModels = [...new Set(entries.map((e) => e.model))];
   const allLabels = modelLabels(allModels);
   const labelOf = (model: string) => allLabels[allModels.indexOf(model)] ?? model;
+  const metric = TREND_METRICS.find((m) => m.key === metricKey) ?? TREND_METRICS[0];
 
   // Suite filter scopes both the charts and the table; entries arrive oldest first.
-  const scope = entries.filter((e) => suiteFilter === "all" || e.suiteName === suiteFilter);
+  const scope = entries.filter(
+    (e) => suiteFilter === "all" || e.suiteName === suiteFilter,
+  );
 
   const runs: RunRef[] = [];
   for (const e of scope) {
-    if (!runs.some((r) => r.id === e.runId)) runs.push({ id: e.runId, label: shortDate(e.createdAt) });
+    if (!runs.some((r) => r.id === e.runId))
+      runs.push({ id: e.runId, label: shortDate(e.createdAt) });
   }
   const byRunModel = new Map(scope.map((e) => [`${e.runId}|${e.model}`, e]));
-  const metric = (pick: (e: HistoryEntry) => number | null) => (runId: string, model: string) => {
-    const e = byRunModel.get(`${runId}|${model}`);
-    if (!e) return null;
-    return pick(e);
-  };
+  const valueOf =
+    (pick: (e: HistoryEntry) => number | null) => (runId: string, model: string) => {
+      const e = byRunModel.get(`${runId}|${model}`);
+      return e ? pick(e) : null;
+    };
 
   const chartModels =
     modelFilter === "all"
       ? [...new Set(scope.map((e) => e.model))]
           .sort(
             (a, b) =>
-              scope.filter((e) => e.model === b).length - scope.filter((e) => e.model === a).length,
+              scope.filter((e) => e.model === b).length -
+              scope.filter((e) => e.model === a).length,
           )
           .slice(0, 5)
       : [modelFilter];
 
-  const scoreChart = buildChart(runs, chartModels, labelOf, metric((e) =>
-    e.score !== null ? Math.round(e.score * 1000) / 10 : null,
-  ));
-  const speedChart = buildChart(runs, chartModels, labelOf, metric((e) =>
-    e.avgTokensPerSecond !== null ? Math.round(e.avgTokensPerSecond * 10) / 10 : null,
-  ));
+  const trend = buildChart(runs, chartModels, labelOf, valueOf(metric.pick));
+
+  // Latest run against the one before it, for the models that appear in both —
+  // the "did this change make things worse?" read.
+  const [previousRun, latestRun] = runs.slice(-2);
+  const deltaRows: RangeRow[] = [];
+  if (previousRun && latestRun) {
+    for (const model of chartModels) {
+      const from = valueOf(metric.pick)(previousRun.id, model);
+      const to = valueOf(metric.pick)(latestRun.id, model);
+      if (from === null || to === null) continue;
+      deltaRows.push({
+        label: labelOf(model),
+        color: seriesColor(chartModels.indexOf(model)),
+        from,
+        to,
+      });
+    }
+  }
 
   const rows = scope
     .filter((e) => modelFilter === "all" || e.model === modelFilter)
@@ -211,8 +352,8 @@ export function BenchmarkHistory({ entries }: { entries: HistoryEntry[] }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Select value={suiteFilter} onValueChange={(v) => v && setSuiteFilter(v)}>
-          <SelectTrigger size="sm" className="w-48" aria-label="Filter by suite">
-            <SelectValue />
+          <SelectTrigger size="sm" className="w-44" aria-label="Filter by suite">
+            <SelectValue>{(v: string) => (v === "all" ? "All suites" : v)}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All suites</SelectItem>
@@ -224,8 +365,8 @@ export function BenchmarkHistory({ entries }: { entries: HistoryEntry[] }) {
           </SelectContent>
         </Select>
         <Select value={modelFilter} onValueChange={(v) => v && setModelFilter(v)}>
-          <SelectTrigger size="sm" className="w-48" aria-label="Filter by model">
-            <SelectValue />
+          <SelectTrigger size="sm" className="w-44" aria-label="Filter by model">
+            <SelectValue>{(v: string) => (v === "all" ? "All models" : labelOf(v))}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All models</SelectItem>
@@ -236,26 +377,73 @@ export function BenchmarkHistory({ entries }: { entries: HistoryEntry[] }) {
             ))}
           </SelectContent>
         </Select>
+        <Select value={metricKey} onValueChange={(v) => v && setMetricKey(v)}>
+          <SelectTrigger size="sm" className="w-52" aria-label="Trend metric">
+            <SelectValue>
+              {(v: string) => TREND_METRICS.find((m) => m.key === v)?.label ?? v}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {TREND_METRICS.map((m) => (
+              <SelectItem key={m.key} value={m.key}>
+                {m.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <p className="text-muted-foreground ml-auto text-xs">
           {rows.length} result{rows.length === 1 ? "" : "s"}
         </p>
       </div>
 
-      {scoreChart || speedChart ? (
-        <div className="grid grid-cols-1 gap-3">
-          {scoreChart ? (
-            <HistoryChartCard title="Accuracy over time" chart={scoreChart} unit="%" />
-          ) : null}
-          {speedChart ? (
-            <HistoryChartCard title="Generation speed over time" chart={speedChart} unit="tok/s" />
-          ) : null}
-        </div>
+      {trend ? (
+        <ChartCard
+          title={`${metric.label} over time`}
+          hint={`One point per run, oldest first. ${
+            metric.lowerIsBetter ? "Lower is better." : "Higher is better."
+          } Runs where a model has no measurement are skipped rather than plotted as zero.`}
+          legend={
+            <ChartLegend
+              series={trend.series.map((s, i) => ({
+                name: s.name,
+                color: seriesColor(i),
+              }))}
+            />
+          }
+        >
+          <LineChart
+            title={`${metric.label} over time`}
+            categories={trend.categories}
+            series={trend.series}
+            unit={metric.unit}
+          />
+        </ChartCard>
       ) : (
         <p className="text-muted-foreground text-xs">
           Trend charts appear once at least two runs share a comparable model
-          {suiteFilter === "all" ? "" : " in this suite"}.
+          {suiteFilter === "all" ? "" : " in this suite"} with a{" "}
+          {metric.label.toLowerCase()} measurement.
         </p>
       )}
+
+      {deltaRows.length > 0 ? (
+        <ChartCard
+          title={`Last run against the one before`}
+          hint={`Faded dot is the previous run, solid dot the latest. ${
+            metric.lowerIsBetter
+              ? "A dot that moved left is an improvement."
+              : "A dot that moved right is an improvement."
+          }`}
+        >
+          <Dumbbell
+            rows={deltaRows}
+            title={`${metric.label}: previous run to latest`}
+            unit={metric.unit}
+            fromLabel="previous"
+            toLabel="latest"
+          />
+        </ChartCard>
+      ) : null}
 
       <div className="bg-card/80 overflow-x-auto rounded-lg border">
         <table className="w-full text-sm">
@@ -265,10 +453,49 @@ export function BenchmarkHistory({ entries }: { entries: HistoryEntry[] }) {
               <SortHeader label="Run" k="run" sort={sort} onSort={onSort} />
               <SortHeader label="Suite" k="suite" sort={sort} onSort={onSort} />
               <SortHeader label="Model" k="model" sort={sort} onSort={onSort} />
-              <SortHeader label="Score" k="score" sort={sort} onSort={onSort} align="right" />
-              <SortHeader label="TTFT" k="ttft" sort={sort} onSort={onSort} align="right" />
-              <SortHeader label="Tok/s" k="tps" sort={sort} onSort={onSort} align="right" />
-              <SortHeader label="~Cost" k="cost" sort={sort} onSort={onSort} align="right" />
+              <SortHeader
+                label="Score"
+                k="score"
+                sort={sort}
+                onSort={onSort}
+                align="right"
+              />
+              <SortHeader
+                label="TTFT"
+                k="ttft"
+                sort={sort}
+                onSort={onSort}
+                align="right"
+              />
+              <SortHeader
+                label="Prefill"
+                k="prefill"
+                sort={sort}
+                onSort={onSort}
+                align="right"
+              />
+              <SortHeader
+                label="Tok/s"
+                k="tps"
+                sort={sort}
+                onSort={onSort}
+                align="right"
+              />
+              <SortHeader
+                label="TPOT"
+                k="tpot"
+                sort={sort}
+                onSort={onSort}
+                align="right"
+              />
+              <SortHeader label="p95" k="p95" sort={sort} onSort={onSort} align="right" />
+              <SortHeader
+                label="~Cost"
+                k="cost"
+                sort={sort}
+                onSort={onSort}
+                align="right"
+              />
             </tr>
           </thead>
           <tbody>
@@ -287,28 +514,50 @@ export function BenchmarkHistory({ entries }: { entries: HistoryEntry[] }) {
                     <span className="text-muted-foreground"> ({e.status})</span>
                   ) : null}
                 </td>
-                <td className="text-muted-foreground max-w-32 truncate px-2 py-2">{e.suiteName}</td>
+                <td className="text-muted-foreground max-w-32 truncate px-2 py-2">
+                  {e.suiteName}
+                </td>
                 <td className="max-w-40 truncate px-2 py-2 font-mono" title={e.model}>
                   {labelOf(e.model)}
                 </td>
-                <td className="px-2 py-2 text-right" style={{ fontVariantNumeric: "tabular-nums" }}>
+                <td className="px-2 py-2 text-right" style={numeric}>
                   {e.score !== null ? `${Math.round(e.score * 100)}%` : "—"}
                 </td>
                 <td
                   className="text-muted-foreground px-2 py-2 text-right"
-                  style={{ fontVariantNumeric: "tabular-nums" }}
+                  style={numeric}
                 >
                   {e.avgTtftMs !== null ? `${(e.avgTtftMs / 1000).toFixed(2)}s` : "—"}
                 </td>
                 <td
                   className="text-muted-foreground px-2 py-2 text-right"
-                  style={{ fontVariantNumeric: "tabular-nums" }}
+                  style={numeric}
+                >
+                  {e.phases !== null ? `${Math.round(e.phases.prefill)}ms` : "—"}
+                </td>
+                <td
+                  className="text-muted-foreground px-2 py-2 text-right"
+                  style={numeric}
                 >
                   {e.avgTokensPerSecond !== null ? e.avgTokensPerSecond.toFixed(1) : "—"}
                 </td>
                 <td
                   className="text-muted-foreground px-2 py-2 text-right"
-                  style={{ fontVariantNumeric: "tabular-nums" }}
+                  style={numeric}
+                >
+                  {e.avgTpotMs !== null ? `${e.avgTpotMs.toFixed(1)}ms` : "—"}
+                </td>
+                <td
+                  className="text-muted-foreground px-2 py-2 text-right"
+                  style={numeric}
+                >
+                  {e.p95LatencyMs !== null
+                    ? `${(e.p95LatencyMs / 1000).toFixed(2)}s`
+                    : "—"}
+                </td>
+                <td
+                  className="text-muted-foreground px-2 py-2 text-right"
+                  style={numeric}
                 >
                   {e.estimatedCost !== null ? `~${formatUsd(e.estimatedCost)}` : "—"}
                 </td>
@@ -318,7 +567,9 @@ export function BenchmarkHistory({ entries }: { entries: HistoryEntry[] }) {
         </table>
       </div>
       <p className="text-muted-foreground text-xs">
-        Cost figures are self-reported estimates (time × your $/hr rate), not metered billing.
+        TTFT is time to first token, TPOT is time per output token, p95 is the tail
+        response time across a run&apos;s tasks. Cost figures are self-reported estimates
+        (time × your $/hr rate), not metered billing.
       </p>
     </div>
   );

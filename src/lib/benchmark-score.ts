@@ -54,6 +54,87 @@ export interface TaskScore {
   error?: string;
 }
 
+// --- statistics (pure, shared by the executor and the views) ---
+
+/** Five-number summary plus mean/spread — the shape a box plot draws directly. */
+export interface Distribution {
+  min: number;
+  /** Lower quartile. */
+  q1: number;
+  median: number;
+  /** Upper quartile. */
+  q3: number;
+  p95: number;
+  max: number;
+  mean: number;
+  stdDev: number;
+  /** Relative spread (stdDev ÷ mean) — the consistency signal. */
+  cv: number;
+  count: number;
+}
+
+/** Linear-interpolated percentile over an unsorted sample; `p` is 0..1. */
+export function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  if (sorted.length === 1) return sorted[0];
+  const pos = (sorted.length - 1) * Math.min(Math.max(p, 0), 1);
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+
+/** Full distribution of a sample; null for an empty sample. */
+export function describe(values: number[]): Distribution | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mean = sorted.reduce((sum, v) => sum + v, 0) / sorted.length;
+  const variance =
+    sorted.length > 1
+      ? sorted.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (sorted.length - 1)
+      : 0;
+  const stdDev = Math.sqrt(variance);
+  return {
+    min: sorted[0],
+    q1: percentile(sorted, 0.25) ?? sorted[0],
+    median: percentile(sorted, 0.5) ?? sorted[0],
+    q3: percentile(sorted, 0.75) ?? sorted[0],
+    p95: percentile(sorted, 0.95) ?? sorted[sorted.length - 1],
+    max: sorted[sorted.length - 1],
+    mean,
+    stdDev,
+    cv: mean > 0 ? stdDev / mean : 0,
+    count: sorted.length,
+  };
+}
+
+// --- request phases ---
+
+/**
+ * The four measured phases of one request, in pipeline order. They sum to the
+ * cell's total latency, so a stacked bar of them is exactly the response time.
+ */
+export const PHASE_KEYS = ["encode", "queue", "prefill", "decode"] as const;
+
+export type PhaseKey = (typeof PHASE_KEYS)[number];
+
+export const PHASE_LABELS: Record<PhaseKey, string> = {
+  encode: "Encode",
+  queue: "Queue",
+  prefill: "Prefill",
+  decode: "Decode",
+};
+
+export const PHASE_HINTS: Record<PhaseKey, string> = {
+  encode: "Building and serializing the request before it leaves the app.",
+  queue: "On the wire until the server starts answering — transport and server queueing.",
+  prefill: "Server evaluating the prompt (prompt eval) up to the first output token.",
+  decode: "Generating output, from the first token to the end of the response.",
+};
+
+/** Milliseconds spent in each phase of a request. */
+export type LatencyPhases = Record<PhaseKey, number>;
+
 // --- shared view types for run summaries (computed server-side) ---
 
 export interface ModelSummary {
@@ -72,10 +153,23 @@ export interface ModelSummary {
   avgLatencyMs: number | null;
   avgTtftMs: number | null;
   avgTokensPerSecond: number | null;
-  avgPromptTokensPerSecond: number | null;
+  avgPrefillTokensPerSecond: number | null;
   /** Total request time across completed cells — the cost basis for this model. */
   totalLatencyMs: number;
   totalOutputTokens: number | null;
+  totalPromptTokens: number | null;
+  /** Mean ms in each request phase; null when no cell recorded the phase split. */
+  phases: LatencyPhases | null;
+  /** End-to-end response time across cells. */
+  latency: Distribution | null;
+  /** Time to first token across cells. */
+  ttft: Distribution | null;
+  /** Generation speed (tok/s) across cells. */
+  decodeSpeed: Distribution | null;
+  /** Steady-state gap between streamed chunks: median and 95th percentile, ms. */
+  interToken: { p50: number; p95: number } | null;
+  /** Time per output token (decode window ÷ output tokens), ms. */
+  avgTpotMs: number | null;
 }
 
 export interface CategorySummary {
@@ -91,7 +185,13 @@ export interface TaskCellView {
   latencyMs: number;
   ttftMs: number | null;
   tokensPerSecond: number | null;
-  promptTokensPerSecond: number | null;
+  prefillTokensPerSecond: number | null;
+  /** Phase split of this request; null for legacy rows and failed cells. */
+  phases: LatencyPhases | null;
+  interTokenP50Ms: number | null;
+  interTokenP95Ms: number | null;
+  promptTokens: number | null;
+  outputTokens: number | null;
   error: string | null;
 }
 
@@ -137,6 +237,10 @@ export interface RunVerdicts {
   latencyAdvantage: number | null;
   /** Model index with the highest tokens/sec; null without data. */
   fastestGeneration: number | null;
+  /** Model index with the highest prefill throughput; null without data. */
+  fastestPrefill: number | null;
+  /** Model index with the steadiest response time (lowest CV); null without data. */
+  mostConsistent: number | null;
 }
 
 const TIE_EPSILON = 0.5;
@@ -186,7 +290,124 @@ export function buildVerdicts(summary: RunSummaryView): RunVerdicts {
   const fastestGeneration =
     withTps.length > 0 ? withTps.reduce((a, b) => (b.v > a.v ? b : a)).i : null;
 
-  return { ranked, categories, fastestLatency, latencyAdvantage, fastestGeneration };
+  const withPrefill = summary.models
+    .map((m, i) => ({ i, v: m.avgPrefillTokensPerSecond }))
+    .filter((e): e is { i: number; v: number } => e.v !== null && e.v > 0);
+  const fastestPrefill =
+    withPrefill.length > 0 ? withPrefill.reduce((a, b) => (b.v > a.v ? b : a)).i : null;
+
+  // Consistency needs more than one sample per model, else CV is a meaningless 0.
+  const withSpread = summary.models
+    .map((m, i) => ({ i, v: m.latency !== null && m.latency.count > 1 ? m.latency.cv : null }))
+    .filter((e): e is { i: number; v: number } => e.v !== null);
+  const mostConsistent =
+    withSpread.length > 1 ? withSpread.reduce((a, b) => (b.v < a.v ? b : a)).i : null;
+
+  return {
+    ranked,
+    categories,
+    fastestLatency,
+    latencyAdvantage,
+    fastestGeneration,
+    fastestPrefill,
+    mostConsistent,
+  };
+}
+
+// --- performance profile (the radar's data) ---
+
+export interface ProfileAxis {
+  key: string;
+  label: string;
+  /** Unit of `raw`, for the axis tick and the table view. */
+  unit: string;
+  /** Raw metric per model, aligned with the run's model order; null = no data. */
+  raw: (number | null)[];
+  /** `raw` as a share of the run's best on this axis, 0..100. */
+  values: (number | null)[];
+  /** The run's best raw value on this axis. */
+  best: number;
+  /** True when a smaller raw value is the better one (latency-like axes). */
+  lowerIsBetter: boolean;
+}
+
+interface AxisSpec {
+  key: string;
+  label: string;
+  unit: string;
+  lowerIsBetter: boolean;
+  pick: (m: ModelSummary) => number | null;
+}
+
+const PROFILE_AXES: AxisSpec[] = [
+  {
+    key: "accuracy",
+    label: "Accuracy",
+    unit: "%",
+    lowerIsBetter: false,
+    pick: (m) => (m.scoredCompleted > 0 ? m.score * 100 : null),
+  },
+  {
+    key: "decode",
+    label: "Decode",
+    unit: "tok/s",
+    lowerIsBetter: false,
+    pick: (m) => m.avgTokensPerSecond,
+  },
+  {
+    key: "prefill",
+    label: "Prefill",
+    unit: "tok/s",
+    lowerIsBetter: false,
+    pick: (m) => m.avgPrefillTokensPerSecond,
+  },
+  { key: "ttft", label: "TTFT", unit: "ms", lowerIsBetter: true, pick: (m) => m.avgTtftMs },
+  {
+    key: "turnaround",
+    label: "Turnaround",
+    unit: "ms",
+    lowerIsBetter: true,
+    pick: (m) => m.avgLatencyMs,
+  },
+  {
+    key: "consistency",
+    label: "Steadiness",
+    unit: "%",
+    lowerIsBetter: true,
+    // Spread as a percentage of the mean; floored so a single-sample 0 never wins.
+    pick: (m) =>
+      m.latency !== null && m.latency.count > 1 ? Math.max(m.latency.cv * 100, 0.1) : null,
+  },
+];
+
+/**
+ * Per-model performance profile: every axis scaled to the best model in this run
+ * (100 = the run's leader on that axis), so wildly different units — %, tok/s,
+ * ms — share one radar. Axes where nobody produced a number are dropped.
+ */
+export function buildProfile(summary: RunSummaryView): ProfileAxis[] {
+  const axes: ProfileAxis[] = [];
+  for (const spec of PROFILE_AXES) {
+    const raw = summary.models.map(spec.pick);
+    const present = raw.filter((v): v is number => v !== null && v > 0);
+    if (present.length === 0) continue;
+    const best = spec.lowerIsBetter ? Math.min(...present) : Math.max(...present);
+    if (best <= 0) continue;
+    axes.push({
+      key: spec.key,
+      label: spec.label,
+      unit: spec.unit,
+      lowerIsBetter: spec.lowerIsBetter,
+      raw,
+      best,
+      values: raw.map((v) =>
+        v === null || v <= 0
+          ? null
+          : Math.min(100, (spec.lowerIsBetter ? best / v : v / best) * 100),
+      ),
+    });
+  }
+  return axes;
 }
 
 // --- extraction helpers ---
@@ -353,9 +574,18 @@ export interface HistoryEntry {
   avgLatencyMs: number | null;
   avgTtftMs: number | null;
   avgTokensPerSecond: number | null;
-  avgPromptTokensPerSecond: number | null;
+  avgPrefillTokensPerSecond: number | null;
+  /** Mean ms per request phase; null when the run predates the phase split. */
+  phases: LatencyPhases | null;
+  /** Time per output token, ms. */
+  avgTpotMs: number | null;
+  /** Tail response time across the run's tasks, ms. */
+  p95LatencyMs: number | null;
+  /** Relative spread of response time (stdDev ÷ mean) — lower is steadier. */
+  latencyCv: number | null;
   totalLatencyMs: number;
   totalOutputTokens: number | null;
+  totalPromptTokens: number | null;
   /** $/hour used for this run's estimate (snapshot, else current setting); null = none. */
   costPerHour: number | null;
   /** Self-reported estimate: totalLatencyMs × costPerHour. */

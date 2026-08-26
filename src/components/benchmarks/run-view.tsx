@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { BarChart, ChartLegend, seriesColor } from "@/components/dashboards/charts";
 import { CostPanel } from "./cost";
+import { PerformancePanel } from "./performance";
 import type { BenchmarkRunStatus } from "@/db/schema";
 import {
   isTimingOnly,
@@ -141,9 +142,6 @@ export function RunView({
     .sort((a, b) => b.score - a.score);
   const progress = summary.total > 0 ? summary.completed / summary.total : 0;
   const hasScored = summary.models.some((m) => m.scoredCompleted > 0);
-  const hasTps = summary.models.some((m) => m.avgTokensPerSecond !== null);
-  const hasTtft = summary.models.some((m) => m.avgTtftMs !== null);
-  const hasPromptTps = summary.models.some((m) => m.avgPromptTokensPerSecond !== null);
 
   const wallClockMs =
     run.startedAt && run.finishedAt
@@ -309,13 +307,13 @@ export function RunView({
                 </ol>
               </section>
 
-              <section className="space-y-2">
-                <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
-                  <span className="bg-neon-cyan mr-2 inline-block h-2.5 w-0.5 align-[-1px]" />
-                  Comparison
-                </h2>
-                <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-                  {hasScored ? (
+              {hasScored ? (
+                <section className="space-y-2">
+                  <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
+                    <span className="bg-neon-cyan mr-2 inline-block h-2.5 w-0.5 align-[-1px]" />
+                    Accuracy
+                  </h2>
+                  <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                     <ChartCard title="Overall accuracy">
                       <BarChart
                         title="Overall accuracy"
@@ -330,106 +328,30 @@ export function RunView({
                         categoryColors={modelColors}
                       />
                     </ChartCard>
-                  ) : null}
 
-                  {summary.categories.length > 1 ? (
-                    <ChartCard
-                      title="Accuracy by category"
-                      legend={labels.map((name, i) => ({ name, color: modelColors[i] }))}
-                    >
-                      <BarChart
+                    {summary.categories.length > 1 ? (
+                      <ChartCard
                         title="Accuracy by category"
-                        categories={summary.categories.map((c) => c.category)}
-                        series={summary.models.map((m, mi) => ({
-                          name: m.label,
-                          data: summary.categories.map((c) =>
-                            c.scores[mi] === null ? 0 : Math.round(c.scores[mi]! * 10) / 10,
-                          ),
-                        }))}
-                        unit="%"
-                      />
-                    </ChartCard>
-                  ) : null}
-
-                  <ChartCard title="Average response time">
-                    <BarChart
-                      title="Average response time"
-                      categories={labels}
-                      series={[
-                        {
-                          name: "Latency",
-                          data: summary.models.map((m) =>
-                            m.avgLatencyMs !== null ? Math.round(m.avgLatencyMs / 100) / 10 : 0,
-                          ),
-                        },
-                      ]}
-                      unit="s"
-                      categoryColors={modelColors}
-                    />
-                  </ChartCard>
-
-                  {hasTps ? (
-                    <ChartCard title="Generation speed">
-                      <BarChart
-                        title="Generation speed"
-                        categories={labels}
-                        series={[
-                          {
-                            name: "Speed",
-                            data: summary.models.map((m) =>
-                              m.avgTokensPerSecond !== null
-                                ? Math.round(m.avgTokensPerSecond * 10) / 10
-                                : 0,
+                        legend={labels.map((name, i) => ({ name, color: modelColors[i] }))}
+                      >
+                        <BarChart
+                          title="Accuracy by category"
+                          categories={summary.categories.map((c) => c.category)}
+                          series={summary.models.map((m, mi) => ({
+                            name: m.label,
+                            data: summary.categories.map((c) =>
+                              c.scores[mi] === null ? 0 : Math.round(c.scores[mi]! * 10) / 10,
                             ),
-                          },
-                        ]}
-                        unit="tok/s"
-                        categoryColors={modelColors}
-                      />
-                    </ChartCard>
-                  ) : null}
+                          }))}
+                          unit="%"
+                        />
+                      </ChartCard>
+                    ) : null}
+                  </div>
+                </section>
+              ) : null}
 
-                  {hasTtft ? (
-                    <ChartCard title="Time to first token">
-                      <BarChart
-                        title="Time to first token"
-                        categories={labels}
-                        series={[
-                          {
-                            name: "TTFT",
-                            data: summary.models.map((m) =>
-                              m.avgTtftMs !== null ? Math.round(m.avgTtftMs / 10) / 100 : 0,
-                            ),
-                          },
-                        ]}
-                        unit="s"
-                        categoryColors={modelColors}
-                      />
-                    </ChartCard>
-                  ) : null}
-
-                  {hasPromptTps ? (
-                    <ChartCard title="Prompt processing">
-                      <BarChart
-                        title="Prompt processing"
-                        categories={labels}
-                        series={[
-                          {
-                            name: "Prompt speed",
-                            data: summary.models.map((m) =>
-                              m.avgPromptTokensPerSecond !== null
-                                ? Math.round(m.avgPromptTokensPerSecond)
-                                : 0,
-                            ),
-                          },
-                        ]}
-                        unit="tok/s"
-                        categoryColors={modelColors}
-                      />
-                    </ChartCard>
-                  ) : null}
-                </div>
-              </section>
+              <PerformancePanel summary={summary} colors={modelColors} />
 
               <section className="space-y-2">
                 <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
@@ -601,8 +523,11 @@ export function RunView({
                                               {cell.tokensPerSecond
                                                 ? `, ${cell.tokensPerSecond.toFixed(1)} tok/s`
                                                 : ""}
-                                              {cell.promptTokensPerSecond
-                                                ? `, prompt ${Math.round(cell.promptTokensPerSecond)} tok/s`
+                                              {cell.prefillTokensPerSecond
+                                                ? `, prefill ${Math.round(cell.prefillTokensPerSecond)} tok/s`
+                                                : ""}
+                                              {cell.phases
+                                                ? ` · prefill ${Math.round(cell.phases.prefill)}ms, decode ${Math.round(cell.phases.decode)}ms`
                                                 : ""}
                                             </span>
                                           </p>

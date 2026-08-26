@@ -5,6 +5,12 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ChartSeries } from "@/lib/dashboard-spec";
 
 /**
+ * The app's chart kit: SVG chart forms plus the shared scale/format/tooltip
+ * helpers, exported so other surfaces (the benchmark charts) can build further
+ * forms on the same scales, palette, and hover behaviour.
+ */
+
+/**
  * Categorical series palette: the app's five neon hues stepped darker for
  * chart-sized fills, validated (dataviz six-checks) against the card surface —
  * lightness band, chroma, CVD adjacent ΔE 20.6, contrast ≥ 3:1. The raw neon
@@ -33,7 +39,7 @@ export function formatValue(value: number, unit?: string): string {
   return unit === "%" ? `${num}%` : `${num} ${unit}`;
 }
 
-function useWidth<T extends HTMLElement>() {
+export function useWidth<T extends HTMLElement>() {
   const ref = useRef<T | null>(null);
   const [width, setWidth] = useState(0);
   useEffect(() => {
@@ -55,14 +61,14 @@ function niceStep(rough: number): number {
   return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * pow;
 }
 
-interface Scale {
+export interface Scale {
   lo: number;
   hi: number;
   ticks: number[];
 }
 
 /** Zero-anchored domain snapped to clean tick steps. */
-function buildScale(values: number[]): Scale {
+export function buildScale(values: number[]): Scale {
   let lo = Math.min(0, ...values);
   let hi = Math.max(0, ...values);
   if (hi === lo) hi = lo + 1;
@@ -80,7 +86,7 @@ function allValues(series: ChartSeries[]): number[] {
   return series.flatMap((s) => s.data);
 }
 
-function truncate(text: string, max: number): string {
+export function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, Math.max(1, max - 1))}…` : text;
 }
 
@@ -106,13 +112,13 @@ function barPathH(y: number, h: number, xBase: number, xEnd: number): string {
   return `M${xBase},${y} L${xEnd + r},${y} Q${xEnd},${y} ${xEnd},${y + r} L${xEnd},${y + h - r} Q${xEnd},${y + h} ${xEnd + r},${y + h} L${xBase},${y + h} Z`;
 }
 
-interface TooltipState {
+export interface TooltipState {
   x: number;
   y: number;
   content: ReactNode;
 }
 
-function Tooltip({ tip, width }: { tip: TooltipState; width: number }) {
+export function Tooltip({ tip, width }: { tip: TooltipState; width: number }) {
   const left = Math.min(Math.max(tip.x, 56), Math.max(width - 56, 56));
   return (
     <div
@@ -182,11 +188,11 @@ interface ChartProps {
   categoryColors?: string[];
 }
 
-const PLOT_HEIGHT = 190;
-const TOP = 16;
-const BOTTOM = 24;
+export const PLOT_HEIGHT = 190;
+export const TOP = 16;
+export const BOTTOM = 24;
 
-function yAxisWidth(ticks: number[], unit?: string): number {
+export function yAxisWidth(ticks: number[], unit?: string): number {
   const longest = Math.max(...ticks.map((t) => formatValue(t, unit).length), 2);
   return Math.max(28, longest * 6.2 + 10);
 }
@@ -439,7 +445,8 @@ export function LineChart({
   const scale = buildScale(allValues(series));
   const left = yAxisWidth(scale.ticks, unit);
   const endLabel = series.length === 1;
-  const right = endLabel ? 48 : 12;
+  // Room for the end-of-line value, else for the last x-axis label's right half.
+  const right = endLabel ? 48 : 30;
   const plotW = Math.max(width - left - right, 40);
   const n = categories.length;
   const stepX = n > 1 ? plotW / (n - 1) : 0;

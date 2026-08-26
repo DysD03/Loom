@@ -470,12 +470,32 @@ export const benchmarkResults = sqliteTable(
     latencyMs: integer("latency_ms").notNull().default(0),
     /** Time to first streamed token (reasoning or text); null for legacy rows. */
     ttftMs: integer("ttft_ms"),
+    /**
+     * Request-encode window: `streamText` call → HTTP request dispatched — client-side
+     * message conversion and JSON serialization. Null for legacy rows.
+     */
+    encodeMs: integer("encode_ms"),
+    /** Dispatch → response headers: transport plus the server accepting the request. */
+    queueMs: integer("queue_ms"),
+    /** Response headers → first output token: the prompt-evaluation (prefill) window. */
+    prefillMs: integer("prefill_ms"),
+    /** First output token → end of the request: the decode (generation) window. */
+    decodeMs: integer("decode_ms"),
+    /** Median gap between streamed chunks — steady-state per-token latency. */
+    interTokenP50Ms: real("inter_token_p50_ms"),
+    /** 95th-percentile gap between streamed chunks — generation stutter. */
+    interTokenP95Ms: real("inter_token_p95_ms"),
+    /** Streamed text chunks observed (the inter-token sample size). */
+    streamChunks: integer("stream_chunks"),
     outputTokens: integer("output_tokens"),
     promptTokens: integer("prompt_tokens"),
     /** Generation speed: output tokens ÷ (total − TTFT). Legacy rows used total time. */
     tokensPerSecond: real("tokens_per_second"),
-    /** Prompt-processing speed: first-turn prompt tokens ÷ TTFT. */
-    promptTokensPerSecond: real("prompt_tokens_per_second"),
+    /**
+     * Prefill throughput: first-turn prompt tokens ÷ the prefill window. Legacy rows
+     * divided by the whole TTFT (the column name predates the phase split).
+     */
+    prefillTokensPerSecond: real("prompt_tokens_per_second"),
     /** Request/scoring failure for this cell, if any. */
     error: text("error"),
     createdAt: text("created_at")
