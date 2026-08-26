@@ -43,6 +43,9 @@ const primaryItems: NavItem[] = [
   { href: "/memory", label: "Memory", icon: Brain },
 ];
 
+/** Routes that render as standalone documents (print/preview), with no app chrome. */
+const CHROMELESS = ["/benchmarks/report/"];
+
 function isActive(pathname: string, href: string) {
   if (href === "/") {
     return pathname === "/";
@@ -85,6 +88,8 @@ function NavLink({
 
 export function Nav() {
   const pathname = usePathname();
+
+  if (CHROMELESS.some((prefix) => pathname.startsWith(prefix))) return null;
 
   return (
     <nav className="bg-sidebar text-sidebar-foreground relative flex h-full w-56 shrink-0 flex-col border-r shadow-[1px_0_14px_-4px_var(--neon-magenta)]">

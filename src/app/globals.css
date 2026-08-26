@@ -358,3 +358,61 @@ body::after {
   margin: 1rem 0;
   border-color: var(--border);
 }
+
+/*
+ * Printable report surface. The app is dark-only, but an exported PDF is a
+ * document — it renders on paper. Overriding the theme tokens on this one
+ * container flips the whole chart kit (which draws with `stroke-border`,
+ * `fill-muted-foreground`, `var(--card)`) to a light surface without any
+ * chart-side branching; series colors are passed in by the caller.
+ */
+.report-paper {
+  --background: #ffffff;
+  --card: #ffffff;
+  --card-foreground: #16161f;
+  --foreground: #16161f;
+  --muted: #f1f1f6;
+  --muted-foreground: #55556a;
+  --border: #d8d8e2;
+  --accent: #f1f1f6;
+  color: var(--foreground);
+  background: var(--background);
+}
+
+/* Keeps a card, table row, or chart from being split across two pages. */
+.report-block {
+  break-inside: avoid;
+}
+
+@media print {
+  /*
+   * The app shell is a fixed-height flex viewport with clipped overflow —
+   * correct on screen, but it would crop a print to a single page. These rules
+   * are print-only, so normal app behaviour is untouched.
+   */
+  html,
+  body {
+    height: auto !important;
+    overflow: visible !important;
+  }
+  body > nav,
+  body > aside,
+  body > [data-sonner-toaster] {
+    display: none !important;
+  }
+  main {
+    overflow: visible !important;
+  }
+  .report-paper {
+    /* Ramp fills and chart marks are the data — never let the printer drop them. */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .report-no-print {
+    display: none !important;
+  }
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+}

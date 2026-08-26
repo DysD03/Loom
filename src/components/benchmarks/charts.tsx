@@ -28,14 +28,41 @@ import {
  * Neither may be reordered or extended by eye.
  */
 
-/** Four steps, dark → light, one per request phase in pipeline order. */
-export const PHASE_COLORS = ["#0a5f6c", "#0197a2", "#4fb9c3", "#a5d7de"];
+/**
+ * The ordinal ramps a chart needs, per surface. Categorical model colors come
+ * from the caller (`seriesColor`) and are validated on both surfaces, so only
+ * the ramps and the in-fill ink vary between screen and paper.
+ */
+export interface VizPalette {
+  /** Four steps, least → most prominent: one per request phase, in pipeline order. */
+  phase: string[];
+  /** Six steps, low → high magnitude, for the heatmap. */
+  sequential: string[];
+  /** Cell background when a task never ran against a model. */
+  empty: string;
+  /** Ink used on the dark end of a ramp fill. */
+  inkOnDark: string;
+  /** Ink used on the light end of a ramp fill. */
+  inkOnLight: string;
+}
 
-/** Six steps, dim → bright, for magnitude in the task heatmap. */
-const SEQUENTIAL = ["#09525d", "#057480", "#0197a2", "#26adb8", "#5dbec8", "#94cfd8"];
+/** Dark app surface (#10101c) — ramps run dim → bright. */
+export const SCREEN_PALETTE: VizPalette = {
+  phase: ["#0a5f6c", "#0197a2", "#4fb9c3", "#a5d7de"],
+  sequential: ["#09525d", "#057480", "#0197a2", "#26adb8", "#5dbec8", "#94cfd8"],
+  empty: "#1b1b2c",
+  inkOnDark: "#e2f2f5",
+  inkOnLight: "#06131a",
+};
 
-/** Cell background when a task never ran against a model. */
-const EMPTY_CELL = "#1b1b2c";
+/** White paper (#ffffff) — ramps run light → dark, as print convention expects. */
+export const PAPER_PALETTE: VizPalette = {
+  phase: ["#59c3ca", "#26b0b9", "#009ba6", "#028089"],
+  sequential: ["#59c3ca", "#26b0b9", "#009ba6", "#028089", "#04646d", "#054850"],
+  empty: "#eef0f3",
+  inkOnDark: "#f4fbfc",
+  inkOnLight: "#06131a",
+};
 
 const SURFACE = "var(--card)";
 
@@ -45,16 +72,15 @@ const GAP = 2;
 const clamp = (value: number, lo: number, hi: number) =>
   Math.min(Math.max(value, lo), hi);
 
-export function phaseColor(index: number): string {
-  return PHASE_COLORS[index % PHASE_COLORS.length];
+export function phaseColor(index: number, palette: VizPalette = SCREEN_PALETTE): string {
+  return palette.phase[index % palette.phase.length];
 }
 
 /** Maps 0..1 onto the sequential ramp. */
-export function rampColor(t: number): string {
-  if (!Number.isFinite(t)) return EMPTY_CELL;
-  return SEQUENTIAL[
-    clamp(Math.round(t * (SEQUENTIAL.length - 1)), 0, SEQUENTIAL.length - 1)
-  ];
+export function rampColor(t: number, palette: VizPalette = SCREEN_PALETTE): string {
+  const ramp = palette.sequential;
+  if (!Number.isFinite(t)) return palette.empty;
+  return ramp[clamp(Math.round(t * (ramp.length - 1)), 0, ramp.length - 1)];
 }
 
 /** WCAG relative luminance of a #rrggbb color. */
@@ -70,8 +96,8 @@ function luminance(hex: string): number {
  * Ink for text set inside a ramp fill — the one place a label may take its color
  * from its background, so it clears contrast at both ends of the ramp.
  */
-function inkOn(fill: string): string {
-  return luminance(fill) > 0.3 ? "#06131a" : "#e2f2f5";
+function inkOn(fill: string, palette: VizPalette): string {
+  return luminance(fill) > 0.3 ? palette.inkOnLight : palette.inkOnDark;
 }
 
 // --- phase breakdown -------------------------------------------------------
@@ -96,7 +122,15 @@ function labelGutter(labels: string[]): number {
  * follow the pipeline order encode → queue → prefill → decode and are separated
  * by a 2px surface gap; the total rides at the end of the bar.
  */
-export function PhaseBreakdown({ rows, title }: { rows: PhaseRow[]; title: string }) {
+export function PhaseBreakdown({
+  rows,
+  title,
+  palette = SCREEN_PALETTE,
+}: {
+  rows: PhaseRow[];
+  title: string;
+  palette?: VizPalette;
+}) {
   const { ref, width } = useWidth<HTMLDivElement>();
   const [tip, setTip] = useState<TooltipState | null>(null);
 
@@ -166,7 +200,7 @@ export function PhaseBreakdown({ rows, title }: { rows: PhaseRow[]; title: strin
                       width={w}
                       height={BAR_H}
                       rx={pi === PHASE_KEYS.length - 1 ? 4 : 1}
-                      fill={phaseColor(pi)}
+                      fill={phaseColor(pi, palette)}
                     />
                   );
                 })}
@@ -199,7 +233,7 @@ export function PhaseBreakdown({ rows, title }: { rows: PhaseRow[]; title: strin
                             >
                               <span
                                 className="inline-block size-2 rounded-full"
-                                style={{ background: phaseColor(pi) }}
+                                style={{ background: phaseColor(pi, palette) }}
                               />
                               <span className="text-muted-foreground">
                                 {PHASE_LABELS[key]}
@@ -233,7 +267,7 @@ export function PhaseBreakdown({ rows, title }: { rows: PhaseRow[]; title: strin
 }
 
 /** Key for the phase ramp — the stack's segments are ordered, not categorical. */
-export function PhaseLegend() {
+export function PhaseLegend({ palette = SCREEN_PALETTE }: { palette?: VizPalette }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       {PHASE_KEYS.map((key, i) => (
@@ -243,7 +277,7 @@ export function PhaseLegend() {
         >
           <span
             className="inline-block h-2 w-4 rounded-sm"
-            style={{ background: phaseColor(i) }}
+            style={{ background: phaseColor(i, palette) }}
           />
           {PHASE_LABELS[key]}
         </span>
@@ -812,6 +846,7 @@ export function Heatmap({
   columnColors,
   cells,
   lowerIsBetter,
+  palette = SCREEN_PALETTE,
   onRowClick,
 }: {
   rowLabels: string[];
@@ -819,22 +854,31 @@ export function Heatmap({
   columnColors: string[];
   /** `cells[row][column]`. */
   cells: HeatCell[][];
-  /** Flips the ramp so the better end is always the brightest. */
+  /** Flips the ramp so the better end is always the strongest. */
   lowerIsBetter: boolean;
+  palette?: VizPalette;
   onRowClick?: (rowIndex: number) => void;
 }) {
   const [hover, setHover] = useState<{ row: number; col: number } | null>(null);
-  const values = cells
-    .flat()
-    .map((c) => c.value)
-    .filter((v): v is number => v !== null);
-  const lo = values.length > 0 ? Math.min(...values) : 0;
-  const hi = values.length > 0 ? Math.max(...values) : 1;
+  /**
+   * Cells are shaded by their *rank* within the run, not by a linear min–max
+   * scale. One slow task would otherwise consume the whole ramp and flatten
+   * every other cell into a single step; ranking spends the ramp evenly across
+   * the grid. The exact value is printed in the cell, so the shade only ever
+   * has to answer "how does this compare here?".
+   */
+  const sorted = [...new Set(
+    cells
+      .flat()
+      .map((c) => c.value)
+      .filter((v): v is number => v !== null),
+  )].sort((a, b) => a - b);
+  const rankOf = new Map(sorted.map((v, i) => [v, i]));
   const shade = (value: number | null): string => {
-    if (value === null) return EMPTY_CELL;
-    if (hi === lo) return rampColor(1);
-    const t = (value - lo) / (hi - lo);
-    return rampColor(lowerIsBetter ? 1 - t : t);
+    if (value === null) return palette.empty;
+    if (sorted.length < 2) return rampColor(1, palette);
+    const t = (rankOf.get(value) ?? 0) / (sorted.length - 1);
+    return rampColor(lowerIsBetter ? 1 - t : t, palette);
   };
 
   return (
@@ -880,7 +924,7 @@ export function Heatmap({
                     className="rounded-sm px-2 py-1.5 text-center text-xs transition-opacity"
                     style={{
                       background: fill,
-                      color: cell.value === null ? "var(--muted-foreground)" : inkOn(fill),
+                      color: cell.value === null ? "var(--muted-foreground)" : inkOn(fill, palette),
                       opacity: hover === null || active ? 1 : 0.65,
                       fontVariantNumeric: "tabular-nums",
                     }}
@@ -900,12 +944,20 @@ export function Heatmap({
 }
 
 /** Ramp key for the heatmap: which end of the scale is the good one. */
-export function RampLegend({ low, high }: { low: string; high: string }) {
+export function RampLegend({
+  low,
+  high,
+  palette = SCREEN_PALETTE,
+}: {
+  low: string;
+  high: string;
+  palette?: VizPalette;
+}) {
   return (
     <div className="text-muted-foreground flex items-center gap-2 text-xs">
       <span>{low}</span>
       <span className="flex">
-        {SEQUENTIAL.map((color) => (
+        {palette.sequential.map((color) => (
           <span
             key={color}
             className="h-2 w-5 first:rounded-l-sm last:rounded-r-sm"

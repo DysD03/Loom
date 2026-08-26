@@ -19,6 +19,7 @@ import {
 import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs";
 import type { BenchTask, HistoryEntry } from "@/lib/benchmark-score";
 import { deleteSuiteAction } from "@/app/benchmarks/actions";
+import { BenchmarkExport } from "./export";
 import { BenchmarkHistory } from "./history";
 import { ModelPicker } from "./model-picker";
 import { SuiteEditor } from "./suite-editor";
@@ -102,6 +103,7 @@ export function BenchmarkCreate({
             <TabsTab value="run">Run benchmark</TabsTab>
             <TabsTab value="suites">Suites</TabsTab>
             <TabsTab value="history">History</TabsTab>
+            <TabsTab value="export">Export PDF</TabsTab>
           </TabsList>
 
           <TabsPanel value="run" className="space-y-5 pt-2">
@@ -221,6 +223,10 @@ export function BenchmarkCreate({
 
           <TabsPanel value="history" className="pt-2">
             <BenchmarkHistory entries={history} />
+          </TabsPanel>
+
+          <TabsPanel value="export" className="pt-2">
+            <BenchmarkExport history={history} />
           </TabsPanel>
         </Tabs>
       </div>
