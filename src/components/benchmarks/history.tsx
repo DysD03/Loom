@@ -213,7 +213,14 @@ interface RunRef {
   label: string;
 }
 
-/** Runs (x-axis) × models (series); drops runs missing any series so gaps never plot as 0. */
+/**
+ * Runs (x-axis) × models (series). A gap must never be plotted as a zero, so
+ * something has to give when a model is missing from a run — and it is the
+ * *model* that gets dropped, not the run. Dropping runs instead empties the
+ * chart as soon as one run compared a different set of models, which is the
+ * normal case: nightly runs over three models plus an occasional five-model
+ * shootout should still trend the three they share.
+ */
 function buildChart(
   runs: RunRef[],
   models: string[],
@@ -221,11 +228,29 @@ function buildChart(
   value: (runId: string, model: string) => number | null,
 ): { categories: string[]; series: { name: string; data: number[] }[] } | null {
   if (models.length === 0) return null;
-  const usable = runs.filter((run) => models.every((m) => value(run.id, m) !== null));
+
+  // Runs that measured this metric at all. The rest aren't gaps, they're N/A —
+  // a timing-only run has no accuracy to plot and must not break the line.
+  const withData = runs.filter((run) => models.some((m) => value(run.id, m) !== null));
+
+  let series = models.filter((m) => withData.every((run) => value(run.id, m) !== null));
+  let usable = withData;
+
+  if (series.length === 0) {
+    // Nothing spans every run — fall back to the best-covered model alone, over
+    // just the runs where it has a value.
+    const best = models
+      .map((m) => ({ model: m, runs: withData.filter((run) => value(run.id, m) !== null) }))
+      .sort((a, b) => b.runs.length - a.runs.length)[0];
+    if (!best || best.runs.length < 2) return null;
+    series = [best.model];
+    usable = best.runs;
+  }
+
   if (usable.length < 2) return null;
   return {
     categories: usable.map((run) => run.label),
-    series: models.map((m) => ({
+    series: series.map((m) => ({
       name: labelOf(m),
       data: usable.map((run) => value(run.id, m)!),
     })),
@@ -420,8 +445,8 @@ export function BenchmarkHistory({ entries }: { entries: HistoryEntry[] }) {
         </ChartCard>
       ) : (
         <p className="text-muted-foreground text-xs">
-          Trend charts appear once at least two runs share a comparable model
-          {suiteFilter === "all" ? "" : " in this suite"} with a{" "}
+          Trend charts appear once at least two runs
+          {suiteFilter === "all" ? "" : " in this suite"} share a model with a{" "}
           {metric.label.toLowerCase()} measurement.
         </p>
       )}

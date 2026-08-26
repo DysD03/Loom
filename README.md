@@ -14,7 +14,7 @@ A personal, **local-first** web UI for your own local LLM. Everything runs on yo
 Two new tabs join the workspace:
 
 - **Dashboards** — turn any **Markdown into a live dashboard**: paste text, upload a `.md` file, or pick an Editor document, and the model extracts its numbers, tables, and lists into a structured spec rendered with Loom's own theme-native widgets — KPI stat tiles, bar/line/area/donut charts (hover tooltips + a table-view twin per chart), tables, checklists, callouts, and meters. When the model is unreachable a deterministic Markdown parser builds the dashboard instead (with a clear notice), so it always renders; edit the source or add guidance and **Regenerate** anytime.
-- **Benchmarks** — race up to 5 models (local + cloud, mixed) through **standardized or custom benchmark suites** and compare them with live charts: a leaderboard, overall + per-category accuracy, a per-request **encode → queue → prefill → decode** breakdown, latency distributions (median/p95/spread), **decode + prefill tokens/sec, TPOT and inter-token jitter**, radar profiles, an accuracy-vs-speed scatter, a task × model heatmap, and self-reported **cost estimates** ($/run and $/1M tokens from your machine's $/hr rate), plus a sortable/filterable per-task ✓/✗ matrix where you can inspect every model's raw output and a **History** view trending any metric across runs. Five built-in auto-scored suites ship out of the box (incl. a timing-only **Speed & Latency** suite); custom suites support exact/contains/numeric/regex/multiple-choice/JSON scoring, an LLM-as-judge mode, timing-only tasks, and **multi-turn prompts**.
+- **Benchmarks** — race up to 5 models (local + cloud, mixed) through **standardized or custom benchmark suites** and compare them with live charts: a leaderboard, overall + per-category accuracy, a per-request **encode → queue → prefill → decode** breakdown, latency distributions (median/p95/spread), **decode + prefill tokens/sec, TPOT and inter-token jitter**, radar profiles, an accuracy-vs-speed scatter, a task × model heatmap, and self-reported **cost estimates** ($/run and $/1M tokens from your machine's $/hr rate), plus a sortable/filterable per-task ✓/✗ matrix where you can inspect every model's raw output, a **History** view trending any metric across runs, and a one-click **PDF export** of any run. Five built-in auto-scored suites ship out of the box (incl. a timing-only **Speed & Latency** suite); custom suites support exact/contains/numeric/regex/multiple-choice/JSON scoring, an LLM-as-judge mode, timing-only tasks, and **multi-turn prompts**.
 
 ## 🧪 New: Experimental Agent (bidirectional goal-convergence)
 
@@ -317,14 +317,36 @@ The **Editor** tab is a distraction-light Markdown editor with a live preview, b
 
 The **Benchmarks** tab races local and cloud models through the same task set and charts the results — accuracy, per-category strengths, and a full performance breakdown: every request is split into **encode → queue → prefill → decode**, with throughput, percentiles, and inter-token jitter on top.
 
-- **Pick any mix of models** — everything your local endpoint exposes, curated cloud models for each provider with an API key, or any free-text model id (up to 5 per run). Requests run one at a time so latency and tokens/sec stay uncontended and honest.
+![Benchmark run view: leaderboard and accuracy across five local models](docs/screenshots/benchmarks-run.png)
+
+Every request is split into four measured phases that add up to the response
+time, so it is obvious whether a model is slow to *start* or slow to *finish*:
+
+![Request phase breakdown: encode, queue, prefill and decode per model](docs/screenshots/benchmarks-phases.png)
+
+Each model also gets a profile scaled against the run's best, so the gap to the
+outer ring is exactly what that model gives up:
+
+![Per-model performance profile radars](docs/screenshots/benchmarks-radar.png)
+
+Results accumulate across runs, and any metric can be trended over time with a
+last-run-against-the-one-before view for catching regressions:
+
+![Benchmark history: time-to-first-token trend and run-over-run comparison](docs/screenshots/benchmarks-history.png)
+
+Any run can be exported as a PDF, with the sections you choose:
+
+![Export PDF tab with section toggles and a live report preview](docs/screenshots/benchmarks-export.png)
+
+- **Pick any mix of models** — everything your local endpoints expose (both LM Studio *and* Ollama, if you run [two local servers](#running-two-local-servers-at-once)), curated cloud models for each provider with an API key, or any free-text model id (up to 5 per run). Requests run one at a time so latency and tokens/sec stay uncontended and honest.
 - **Standardized suites** — five built-in, deterministically auto-scored suites: **Quick Check** (10-task smoke test), **Reasoning & Math** (GSM8K-style word problems), **General Knowledge** (MMLU-style multiple choice), **Instruction Following** (IFEval-style checkable constraints), and **Speed & Latency** (timing-only probes that isolate one phase at a time: near-empty prompts for the latency floor, 500/1.5K/3K-token prompts for prefill throughput, and long answers for decode speed and stutter). Scoring never depends on a model's opinion, so results are comparable across runs.
 - **Phase-level metrics** — every request is instrumented at the HTTP boundary, so each result records **encode** (building and serializing the request), **queue** (on the wire until the server answers), **prefill** (prompt evaluation up to the first token), and **decode** (generation) — four phases that add up exactly to the response time. From those come TTFT, decode tok/s (post-TTFT time only), **prefill tok/s**, **TPOT** (time per output token), and **inter-token latency** p50/p95 for stutter.
 - **Comparison charts** — a stacked phase breakdown, box-and-whisker spreads for response time / TTFT / decode speed (median, quartiles, p95, min–max), a median→p95 inter-token dumbbell, per-model **radar profiles** scaled to the run's best, an accuracy-against-speed scatter for the quality/latency trade-off, and a task × model **heatmap** you can switch between seven metrics. Every chart has an **All metrics** table twin — no number is hover-only.
 - **Custom suites** — author your own tasks with exact / contains / numeric / regex / multiple-choice / JSON scoring, an **AI judge** mode that grades 0–10 against your reference answer (uses the utility model), or **timing-only** tasks with no correctness check. Tasks can be **multi-turn**: add follow-up turns and the final reply is scored.
 - **Live results** — runs execute in the background and the page streams progress; charts and the leaderboard update as results land, and a run can be cancelled mid-flight. Each run snapshots its tasks, so editing a suite later never rewrites history.
 - **Drill down** — the task matrix is sortable and filterable (category, passed/failed, per-model score); click a row to see the prompt, the expected answer, and every model's raw output with timing.
-- **History** — a cross-run view trends any of eleven metrics (accuracy, decode/prefill throughput, TTFT, prefill and decode time, TPOT, mean and p95 response time, spread, cost) over time, plus a **last run against the one before** view for spotting regressions, above a sortable table of every past result.
+- **History** — a cross-run view trends any of eleven metrics (accuracy, decode/prefill throughput, TTFT, prefill and decode time, TPOT, mean and p95 response time, spread, cost) over time, plus a **last run against the one before** view for spotting regressions, above a sortable table of every past result. Runs that compared different model sets still trend whatever they share.
+- **Export PDF** — turn any run into a printable report: pick the run, toggle which sections it carries (leaderboard, latency breakdown, distributions, throughput, all-metrics table, per-task results, cost), preview the exact document, and save it. The report renders on a light paper surface with its own validated palette, paginates properly, and is produced entirely by your browser's print dialog — nothing is uploaded anywhere.
 - **Cost estimates** — set your machine's **$ per hour** in Settings (watts × $/kWh is a good starting point) and each run shows an estimated compute cost plus an estimated **$ per 1K/1M tokens** from the measured speed, with a what-if calculator to compare against hosted-API pricing. Self-reported and clearly labelled — local inference is never metered.
 
 ## Dashboards (Markdown → dashboard)
