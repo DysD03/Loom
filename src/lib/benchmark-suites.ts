@@ -5,6 +5,13 @@ import type { BenchTask } from "./benchmark-score";
  * Every task is auto-scored deterministically (no judge), so results are
  * directly comparable across models and runs. Keyed by a stable id so re-seeding
  * updates content without duplicating rows.
+ *
+ * These are tuned to **separate** models, not to be passed. A benchmark where a
+ * 3B and a 30B both score 100% measures nothing, so tasks target the places
+ * small local models actually break down: multi-step arithmetic where errors
+ * compound, prompts engineered to trigger a confident wrong intuition,
+ * simultaneous formatting constraints, exact structured output, and retrieval
+ * from a long context. Expect good local models to land well short of 100%.
  */
 
 export interface BuiltinSuite {
@@ -16,7 +23,13 @@ export interface BuiltinSuite {
 }
 
 const NUMERIC_SUFFIX = " End your reply with 'Answer: <number>'.";
-const MCQ_SUFFIX = " Respond with only the letter of the correct answer.";
+/**
+ * Hard multiple choice needs room to reason, so the answer is requested as a
+ * trailing marker rather than a bare letter — the extractor looks for exactly
+ * this shape first, and a model that reasons out loud is no longer punished for
+ * mentioning a wrong option along the way.
+ */
+const MCQ_SUFFIX = " End your reply with 'Answer: <letter>'.";
 
 const PASSAGE_SENTENCES = [
   "The relay station sat at the edge of the crater, its antenna array humming against the thin wind.",
@@ -40,8 +53,30 @@ const PASSAGE_SENTENCES = [
 function longPassage(seed: string, sections = 12): string {
   const out: string[] = [];
   for (let i = 1; i <= sections; i++) {
-    const rotated = [...PASSAGE_SENTENCES.slice(i % 10), ...PASSAGE_SENTENCES.slice(0, i % 10)];
+    const rotated = [
+      ...PASSAGE_SENTENCES.slice(i % 10),
+      ...PASSAGE_SENTENCES.slice(0, i % 10),
+    ];
     out.push(`Log ${seed}-${i}: ${rotated.join(" ")}`);
+  }
+  return out.join("\n\n");
+}
+
+/**
+ * The same passage with specific facts planted at chosen sections. Retrieval
+ * difficulty is mostly a function of *where* the needle sits and what it sits
+ * next to, so tasks control both: `facts` maps a 1-based section index to a
+ * sentence appended to that section.
+ */
+function factLog(seed: string, sections: number, facts: Record<number, string>): string {
+  const out: string[] = [];
+  for (let i = 1; i <= sections; i++) {
+    const rotated = [
+      ...PASSAGE_SENTENCES.slice(i % 10),
+      ...PASSAGE_SENTENCES.slice(0, i % 10),
+    ];
+    const planted = facts[i] ? ` ${facts[i]}` : "";
+    out.push(`Log ${seed}-${i}: ${rotated.join(" ")}${planted}`);
   }
   return out.join("\n\n");
 }
@@ -61,12 +96,71 @@ const prefillProbe = (name: string, seed: string, sections: number): BenchTask =
     `Read the following operations log, then reply with only the word: done\n\n${longPassage(seed, sections)}`,
   );
 
-const mcq = (name: string, question: string, expected: string): BenchTask => ({
+const mcq = (
+  name: string,
+  category: string,
+  question: string,
+  expected: string,
+): BenchTask => ({
   name,
-  category: "knowledge",
+  category,
   prompt: question + MCQ_SUFFIX,
   scoring: "mcq",
   expected,
+});
+
+const numeric = (
+  name: string,
+  category: string,
+  question: string,
+  expected: string,
+): BenchTask => ({
+  name,
+  category,
+  prompt: question + NUMERIC_SUFFIX,
+  scoring: "numeric",
+  expected,
+});
+
+/** Long-context retrieval probe: one document, one precisely checkable answer. */
+const retrieval = (
+  name: string,
+  ask: string,
+  document: string,
+  scoring: BenchTask["scoring"],
+  expected: string,
+): BenchTask => ({
+  name,
+  category: "retrieval",
+  prompt: `${ask}\n\n--- OPERATIONS LOG ---\n${document}`,
+  scoring,
+  expected,
+});
+
+// Shared documents, so the retrieval tasks read like one coherent log set.
+const SERIAL_LOG = factLog("sierra", 20, {
+  4: "The pump serial is RT-1180.",
+  11: "The compressor serial is RT-1108.",
+  17: "The chiller serial is RT-8110.",
+});
+
+const TALLY_LOG = factLog("tango", 20, {
+  3: "Pallet A holds 34 crates.",
+  9: "Pallet B holds 57 crates.",
+  16: "Pallet C holds 21 crates.",
+});
+
+const EVENT_LOG = factLog("echo", 20, {
+  5: "At 02:10 the intake filter was swapped.",
+  12: "At 01:45 the coolant loop was purged.",
+  18: "At 03:20 the backup generator was tested.",
+});
+
+const FLAG_LOG = factLog("foxtrot", 20, {
+  2: "Flag: AMBER.",
+  7: "Flag: AMBER.",
+  13: "Flag: AMBER.",
+  18: "Flag: AMBER.",
 });
 
 export const BUILTIN_SUITES: BuiltinSuite[] = [
@@ -74,89 +168,74 @@ export const BUILTIN_SUITES: BuiltinSuite[] = [
     id: "builtin-quick-check",
     name: "Quick Check",
     description:
-      "A 10-task smoke test across arithmetic, knowledge, logic, instructions, and extraction. Fast enough for slow local models.",
+      "A 10-task spread across arithmetic, traps, format control, and extraction — short answers, so it finishes fast on slow local models while still separating them. Weak models typically land 40–70% here.",
     tasks: [
-      {
-        name: "Change from a bill",
-        category: "math",
-        prompt:
-          "A bakery sells muffins for $3 each. Tom buys 7 muffins and pays with a $50 bill. How much change does he get, in dollars?" +
-          NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "29",
-      },
-      {
-        name: "Average speed",
-        category: "math",
-        prompt:
-          "A train travels 180 km in 2.5 hours. What is its average speed in km/h?" +
-          NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "72",
-      },
-      {
-        name: "Most moons",
-        category: "knowledge",
-        prompt:
-          "Which of these planets has the most known moons? A) Earth B) Mars C) Saturn D) Mercury." +
-          MCQ_SUFFIX,
-        scoring: "mcq",
-        expected: "C",
-      },
-      {
-        name: "Chemical symbol",
-        category: "knowledge",
-        prompt: "What is the chemical symbol for gold? A) Ag B) Au C) Gd D) Go." + MCQ_SUFFIX,
-        scoring: "mcq",
-        expected: "B",
-      },
+      numeric(
+        "Compound discount",
+        "math",
+        "A jacket costs $80. It is marked down 25%, and then a further 10% is taken off the sale price. What is the final price in dollars?",
+        "54",
+      ),
+      numeric(
+        "Bat and ball",
+        "traps",
+        "A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost, in dollars?",
+        "0.05",
+      ),
+      numeric(
+        "Modular arithmetic",
+        "math",
+        "What is the remainder when 2^10 is divided by 7?",
+        "2",
+      ),
+      numeric(
+        "Letter counting",
+        "traps",
+        "How many times does the letter 'r' appear in the word 'strawberry'?",
+        "3",
+      ),
+      mcq(
+        "Invalid syllogism",
+        "logic",
+        "All Bloops are Razzies. Some Razzies are Lazzies. Which statement MUST be true? A) All Bloops are Lazzies B) Some Bloops are Lazzies C) No Bloops are Lazzies D) None of these must be true.",
+        "D",
+      ),
       {
         name: "Verbatim echo",
         category: "instructions",
-        prompt: "Respond with exactly the following text and nothing else: LOOM BENCHMARK OK",
+        prompt: "Respond with exactly the following text and nothing else: LOOM-2026-OK",
         scoring: "exact",
-        expected: "LOOM BENCHMARK OK",
+        expected: "LOOM-2026-OK",
       },
       {
-        name: "Countdown list",
-        category: "instructions",
-        prompt: "List the numbers from 5 down to 1, separated by commas, with no other text.",
-        scoring: "regex",
-        expected: "^\\W*5\\s*,\\s*4\\s*,\\s*3\\s*,\\s*2\\s*,\\s*1\\W*$",
-      },
-      {
-        name: "Simple JSON object",
+        name: "Nested JSON",
         category: "json",
         prompt:
-          "Return a JSON object with the key 'name' set to 'Loom' and the key 'year' set to the number 2026. Return only the JSON.",
+          "Return only a JSON object with a key 'totals' whose value is an object with key 'a' set to the number 7 and key 'b' set to the number 12.",
         scoring: "json",
-        expected: '{"name":"Loom","year":2026}',
+        expected: '{"totals":{"a":7,"b":12}}',
       },
       {
-        name: "Syllogism",
-        category: "logic",
+        name: "Sort ascending",
+        category: "instructions",
         prompt:
-          "All bloops are razzies. All razzies are lazzies. Are all bloops definitely lazzies? A) Yes B) No C) Cannot be determined." +
-          MCQ_SUFFIX,
-        scoring: "mcq",
-        expected: "A",
+          "Sort these numbers in ascending order and reply with only the comma-separated list, no other text: 12, 3, 45, 7, 21, 9",
+        scoring: "regex",
+        expected: "^\\W*3\\s*,\\s*7\\s*,\\s*9\\s*,\\s*12\\s*,\\s*21\\s*,\\s*45\\W*$",
       },
+      numeric(
+        "Combined rates",
+        "math",
+        "One tap fills a tank in 6 hours. A second tap fills the same tank in 12 hours. If both run together, how many hours does it take to fill the tank?",
+        "4",
+      ),
       {
-        name: "Nested counting",
-        category: "logic",
-        prompt:
-          "You have 3 boxes. Each box contains 4 bags, and each bag holds 5 marbles. How many marbles are there in total?" +
-          NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "60",
-      },
-      {
-        name: "Email extraction",
+        name: "Extraction with distractors",
         category: "extraction",
         prompt:
-          "Extract the email address from this text and reply with only the email address: 'Contact our support team at help@loomapp.dev for assistance.'",
+          "Reply with only the phone number from this text: 'Order #55123 shipped on 2026-03-14. Call 555-0147 with questions; do not reply to invoice 90210.'",
         scoring: "contains",
-        expected: "help@loomapp.dev",
+        expected: "555-0147",
       },
     ],
   },
@@ -202,142 +281,160 @@ export const BUILTIN_SUITES: BuiltinSuite[] = [
     id: "builtin-reasoning-math",
     name: "Reasoning & Math",
     description:
-      "10 GSM8K-style word problems and logic puzzles with exact numeric or multiple-choice answers.",
+      "12 multi-step word problems, constraint puzzles, and reasoning traps where a single slip changes the answer. The sharpest separator in the set — small models often fall below 40%.",
     tasks: [
+      numeric(
+        "Ticket algebra",
+        "math",
+        "Adult tickets cost $12 and child tickets cost $7. A group bought 20 tickets in total and paid $195. How many child tickets did they buy?",
+        "9",
+      ),
+      numeric(
+        "Staggered work rates",
+        "math",
+        "Alice can paint a room in 5 hours and Bob can paint it in 3 hours. Alice works alone for 1 hour, then Bob joins her. How many additional hours after Bob joins are needed to finish the room?",
+        "1.5",
+      ),
+      numeric(
+        "Percentage round trip",
+        "traps",
+        "A price rises by 20%, and then the new price falls by 20%. The final price is $96. What was the original price in dollars?",
+        "100",
+      ),
       {
-        name: "Sticker ratio",
-        category: "math",
-        prompt:
-          "Sarah has 3 times as many stickers as Tom. Together they have 48 stickers. How many stickers does Sarah have?" +
-          NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "36",
-      },
-      {
-        name: "Reverse discount",
-        category: "math",
-        prompt:
-          "A shirt costs $25 after a 20% discount. What was the original price in dollars?" +
-          NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "31.25",
-      },
-      {
-        name: "Even sum",
-        category: "math",
-        prompt:
-          "What is the sum of all even numbers from 2 to 20, inclusive?" + NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "110",
-      },
-      {
-        name: "Rectangle area",
-        category: "math",
-        prompt:
-          "A rectangle's length is twice its width. Its perimeter is 36 cm. What is its area in square centimeters?" +
-          NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "72",
-      },
-      {
-        name: "Reading schedule",
-        category: "math",
-        prompt:
-          "Lena reads 15 pages per day for 6 days, then 20 pages per day for 3 days. How many pages does she read in total?" +
-          NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "150",
-      },
-      {
-        name: "Machines & widgets",
+        name: "Day of the week",
         category: "logic",
         prompt:
-          "If 5 machines make 5 widgets in 5 minutes, how many minutes would 100 machines take to make 100 widgets?" +
-          NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "5",
+          "Today is Wednesday. What day of the week will it be 100 days from today? Reply with only the name of the day.",
+        scoring: "contains",
+        expected: "Friday",
       },
-      {
-        name: "Height ordering",
-        category: "logic",
-        prompt:
-          "Anna is taller than Ben. Ben is taller than Carl. Dave is shorter than Carl. Who is the second tallest? A) Anna B) Ben C) Carl D) Dave." +
-          MCQ_SUFFIX,
-        scoring: "mcq",
-        expected: "B",
-      },
-      {
-        name: "Number sequence",
-        category: "logic",
-        prompt:
-          "Which number comes next in the sequence 2, 6, 12, 20, 30, …? A) 40 B) 42 C) 44 D) 36." +
-          MCQ_SUFFIX,
-        scoring: "mcq",
-        expected: "B",
-      },
-      {
-        name: "Clock difference",
-        category: "math",
-        prompt:
-          "A clock shows 3:15. In how many minutes will it show 4:05?" + NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "50",
-      },
-      {
-        name: "Ticket algebra",
-        category: "math",
-        prompt:
-          "Tickets cost $8 for adults and $5 for children. A group of 4 adults and some children paid $52 in total. How many children were in the group?" +
-          NUMERIC_SUFFIX,
-        scoring: "numeric",
-        expected: "4",
-      },
+      numeric(
+        "Arrangements with repeats",
+        "math",
+        "Using the letters of the word LEVEL, and using each letter no more often than it appears in LEVEL, how many distinct three-letter arrangements can be formed?",
+        "18",
+      ),
+      numeric(
+        "Nested percentages",
+        "math",
+        "A warehouse holds 480 items. 45% of them are tools. Of those tools, 25% are cordless. How many cordless tools are in the warehouse?",
+        "54",
+      ),
+      mcq(
+        "Knights and knaves",
+        "logic",
+        "On an island, knights always tell the truth and knaves always lie. A says 'B is a knave.' B says 'A and I are the same type.' What is B? A) A knight B) A knave C) It cannot be determined D) Both are knights.",
+        "B",
+      ),
+      numeric(
+        "Sequence rule",
+        "logic",
+        "What is the next number in the sequence 2, 3, 5, 9, 17, 33, ...?",
+        "65",
+      ),
+      numeric(
+        "Closing speed",
+        "math",
+        "Two trains start 300 km apart and travel toward each other, one at 60 km/h and the other at 90 km/h. After how many hours do they meet?",
+        "2",
+      ),
+      numeric(
+        "Age in six years",
+        "math",
+        "In 6 years, Maya will be twice as old as Ken will be then. Ken is 14 years old now. How old is Maya now?",
+        "34",
+      ),
+      numeric(
+        "Overlapping sets",
+        "logic",
+        "In a class of 40 students, 25 study French, 20 study German, and 8 study both languages. How many students study neither language?",
+        "3",
+      ),
+      numeric(
+        "Fuel cost chain",
+        "math",
+        "A car uses 7 litres of fuel per 100 km. Fuel costs $1.80 per litre. What is the fuel cost in dollars for a 250 km trip?",
+        "31.5",
+      ),
     ],
   },
   {
     id: "builtin-knowledge",
     name: "General Knowledge",
     description:
-      "12 MMLU-style multiple-choice questions across science, history, geography, arts, and computing.",
+      "12 multiple-choice questions across science, computing, history, and the arts, written with plausible distractors and a few common misconceptions. Guessing averages 25%.",
     tasks: [
-      mcq("Insulin organ", "Which organ produces insulin? A) Liver B) Pancreas C) Kidney D) Spleen.", "B"),
-      mcq("WWII end", "In which year did World War II end? A) 1943 B) 1944 C) 1945 D) 1946.", "C"),
-      mcq("Australia capital", "What is the capital of Australia? A) Sydney B) Melbourne C) Canberra D) Perth.", "C"),
       mcq(
-        "Atmosphere gas",
-        "Which gas makes up the largest share of Earth's atmosphere? A) Oxygen B) Carbon dioxide C) Nitrogen D) Argon.",
-        "C",
-      ),
-      mcq(
-        "Solitude author",
-        "Who wrote 'One Hundred Years of Solitude'? A) Jorge Luis Borges B) Gabriel García Márquez C) Pablo Neruda D) Mario Vargas Llosa.",
+        "Electronegativity",
+        "science",
+        "Which of these elements has the highest electronegativity? A) Oxygen B) Fluorine C) Chlorine D) Nitrogen.",
         "B",
       ),
       mcq(
-        "HTTP meaning",
-        "In computing, what does HTTP stand for? A) HyperText Transfer Protocol B) High Throughput Transfer Protocol C) HyperText Transmission Process D) Host Transfer Text Protocol.",
-        "A",
-      ),
-      mcq("Largest ocean", "Which is the largest ocean on Earth? A) Atlantic B) Indian C) Arctic D) Pacific.", "D"),
-      mcq(
-        "Speed of light",
-        "The speed of light in a vacuum is approximately: A) 300,000 km/s B) 150,000 km/s C) 1,000,000 km/s D) 30,000 km/s.",
-        "A",
-      ),
-      mcq("Atomic number 1", "Which element has atomic number 1? A) Helium B) Hydrogen C) Lithium D) Oxygen.", "B"),
-      mcq(
-        "Everest border",
-        "Mount Everest lies on the border between Nepal and which other country? A) India B) Bhutan C) China D) Pakistan.",
+        "Stable n log n sort",
+        "computing",
+        "Which sorting algorithm has O(n log n) worst-case time complexity AND is stable? A) Quicksort B) Heapsort C) Merge sort D) Insertion sort.",
         "C",
       ),
       mcq(
-        "Sistine Chapel",
-        "Which artist painted the ceiling of the Sistine Chapel? A) Leonardo da Vinci B) Raphael C) Michelangelo D) Donatello.",
+        "Peace of Westphalia",
+        "history",
+        "The Peace of Westphalia in 1648 ended which conflict? A) The Hundred Years' War B) The Thirty Years' War C) The War of the Spanish Succession D) The Napoleonic Wars.",
+        "B",
+      ),
+      mcq(
+        "Shortest day",
+        "science",
+        "Which of these planets has the shortest rotation period (the shortest day)? A) Mercury B) Earth C) Jupiter D) Mars.",
         "C",
       ),
       mcq(
-        "FIFO structure",
-        "Which data structure processes elements in first-in, first-out (FIFO) order? A) Stack B) Queue C) Tree D) Graph.",
+        "Meaning of a p-value",
+        "science",
+        "In frequentist statistics, what does a p-value represent? A) The probability that the null hypothesis is true B) The probability of observing data at least as extreme as the data seen, assuming the null hypothesis is true C) The probability that the alternative hypothesis is true D) The magnitude of the observed effect.",
+        "B",
+      ),
+      mcq(
+        "Not an HTTP method",
+        "computing",
+        "Which of these is NOT an HTTP request method? A) PATCH B) TRACE C) CONNECT D) RENAME.",
+        "D",
+      ),
+      mcq(
+        "Creative destruction",
+        "history",
+        "Which economist is most associated with the concept of 'creative destruction'? A) John Maynard Keynes B) Joseph Schumpeter C) Milton Friedman D) Friedrich Hayek.",
+        "B",
+      ),
+      mcq(
+        "Perfect fifth",
+        "arts",
+        "In twelve-tone equal temperament, how many semitones are in a perfect fifth? A) 5 B) 6 C) 7 D) 8.",
+        "C",
+      ),
+      mcq(
+        "Universal plasma donor",
+        "science",
+        "Which blood type is the universal donor for PLASMA (not red cells)? A) O negative B) AB positive C) A positive D) O positive.",
+        "B",
+      ),
+      mcq(
+        "Mitochondrial folds",
+        "science",
+        "The folds of the inner mitochondrial membrane are called: A) Cristae B) Thylakoids C) Villi D) Lamellae.",
+        "A",
+      ),
+      mcq(
+        "Finnish language family",
+        "history",
+        "Finnish belongs to which language family? A) Indo-European B) Uralic C) Turkic D) Afro-Asiatic.",
+        "B",
+      ),
+      mcq(
+        "Big-O of binary search",
+        "computing",
+        "What is the worst-case time complexity of binary search on a sorted array of n elements? A) O(1) B) O(log n) C) O(n) D) O(n log n).",
         "B",
       ),
     ],
@@ -346,68 +443,155 @@ export const BUILTIN_SUITES: BuiltinSuite[] = [
     id: "builtin-instructions",
     name: "Instruction Following",
     description:
-      "8 IFEval-style tasks with programmatically checkable constraints: exact text, formats, counts, and JSON shapes.",
+      "10 programmatically checkable constraints — exact counts, forbidden letters, precise formats, nested JSON, and a multi-turn recall. Tests control of the output, not knowledge; models that like to add a preamble score badly.",
     tasks: [
       {
-        name: "Exact phrase",
+        name: "Exactly five words",
         category: "instructions",
-        prompt: "Respond with exactly this text and nothing else: The quick brown fox",
+        prompt:
+          "Write a sentence about the ocean that contains exactly five words. Reply with only the sentence and no other text.",
+        scoring: "regex",
+        expected: "^\\s*\\S+(\\s+\\S+){4}\\s*$",
+      },
+      {
+        name: "Forbidden letter",
+        category: "instructions",
+        prompt:
+          "Write one sentence about a cat that does not contain the letter 'e' anywhere. Reply with only the sentence and no other text.",
+        scoring: "regex",
+        expected: "^[^eE]+$",
+      },
+      {
+        name: "Repeat with separator",
+        category: "instructions",
+        prompt:
+          "Reply with the word 'loom' exactly seven times, separated by single hyphens, with no spaces and no other text.",
+        scoring: "regex",
+        expected: "^\\W*loom(-loom){6}\\W*$",
+      },
+      {
+        name: "Selective uppercase",
+        category: "instructions",
+        prompt:
+          "Rewrite this sentence with only the word 'red' in uppercase and everything else unchanged. Reply with only the rewritten sentence: the red fox jumps over the red fence",
         scoring: "exact",
-        expected: "The quick brown fox",
+        expected: "the RED fox jumps over the RED fence",
       },
       {
-        name: "Uppercase transform",
+        name: "Reverse word order",
         category: "instructions",
         prompt:
-          "Write the sentence 'i love benchmarks' in all uppercase letters, with no other text.",
+          "Reverse the order of the words in this sentence and reply with only the result: benchmarks measure model performance carefully",
         scoring: "exact",
-        expected: "I LOVE BENCHMARKS",
+        expected: "carefully performance model measure benchmarks",
       },
       {
-        name: "Three fruits",
-        category: "instructions",
-        prompt:
-          "Name exactly three fruits as a comma-separated list on a single line, with no other text.",
-        scoring: "regex",
-        expected: "^\\s*[A-Za-z][A-Za-z ]*,\\s*[A-Za-z][A-Za-z ]*,\\s*[A-Za-z][A-Za-z ]*\\s*$",
-      },
-      {
-        name: "Prime array",
-        category: "json",
-        prompt: "Return only a JSON array containing the first 5 prime numbers in ascending order.",
-        scoring: "json",
-        expected: "[2,3,5,7,11]",
-      },
-      {
-        name: "One-word answer",
-        category: "instructions",
-        prompt: "Answer with a single word: what color is a ripe banana?",
-        scoring: "regex",
-        expected: "^\\W*yellow\\W*$",
-      },
-      {
-        name: "Word reversal",
-        category: "instructions",
-        prompt: "Reverse the word 'benchmark' and reply with only the reversed word.",
-        scoring: "contains",
-        expected: "kramhcneb",
-      },
-      {
-        name: "Repeat four times",
-        category: "instructions",
-        prompt:
-          "Reply with the word 'loom' exactly four times, separated by single spaces, with no other text.",
-        scoring: "regex",
-        expected: "^\\W*loom loom loom loom\\W*$",
-      },
-      {
-        name: "JSON with array",
+        name: "JSON with computed values",
         category: "json",
         prompt:
-          "Return only a JSON object with a key 'languages' whose value is the array [\"Python\", \"Rust\"] exactly.",
+          "Return only a JSON object with a key 'stats' whose value is an object with 'count' set to the number of items in this list and 'sum' set to their total: [4, 8, 15, 16, 23, 42]",
         scoring: "json",
-        expected: '{"languages":["Python","Rust"]}',
+        expected: '{"stats":{"count":6,"sum":108}}',
       },
+      {
+        name: "JSON array of objects",
+        category: "json",
+        prompt:
+          "Return only a JSON array containing exactly two objects, each with keys 'id' and 'ok'. The first object has id 1 and ok true; the second has id 2 and ok false.",
+        scoring: "json",
+        expected: '[{"id":1,"ok":true},{"id":2,"ok":false}]',
+      },
+      {
+        name: "Acrostic",
+        category: "instructions",
+        prompt:
+          "Write four words, one per line, whose first letters spell LOOM in that order. Reply with only the four words.",
+        scoring: "regex",
+        expected: "^\\W*l\\w*\\s+o\\w*\\s+o\\w*\\s+m\\w*\\W*$",
+      },
+      {
+        name: "Primes in a range",
+        category: "instructions",
+        prompt:
+          "List every prime number strictly between 20 and 40, in ascending order, comma-separated on one line, with no other text.",
+        scoring: "regex",
+        expected: "^\\W*23\\s*,\\s*29\\s*,\\s*31\\s*,\\s*37\\W*$",
+      },
+      {
+        name: "Multi-turn recall",
+        category: "instructions",
+        prompt: "Remember this code word: ORBIT. Reply with only the word: ready",
+        followups: [
+          "Ignore the code word for a moment and reply with only the word: waiting",
+          "Now reply with only the code word I gave you at the start, in lowercase.",
+        ],
+        scoring: "exact",
+        expected: "orbit",
+      },
+    ],
+  },
+  {
+    id: "builtin-long-context",
+    name: "Long Context & Retrieval",
+    description:
+      "8 questions over ~2,500-token operations logs: find a buried fact, aggregate figures scattered across the document, resist near-identical distractors, and say so when the answer simply isn't there. Long-context handling is where local models diverge most from their benchmark scores.",
+    tasks: [
+      retrieval(
+        "Needle near the start",
+        "Read the operations log below and reply with only the serial number of the pump.",
+        SERIAL_LOG,
+        "contains",
+        "RT-1180",
+      ),
+      retrieval(
+        "Near-identical distractors",
+        "Read the operations log below and reply with only the serial number of the compressor.",
+        SERIAL_LOG,
+        "contains",
+        "RT-1108",
+      ),
+      retrieval(
+        "Needle near the end",
+        "Read the operations log below and reply with only the serial number of the chiller.",
+        SERIAL_LOG,
+        "contains",
+        "RT-8110",
+      ),
+      retrieval(
+        "Scattered totals",
+        `Read the operations log below and work out the total number of crates across all pallets mentioned.${NUMERIC_SUFFIX}`,
+        TALLY_LOG,
+        "numeric",
+        "112",
+      ),
+      retrieval(
+        "Earliest event",
+        "Read the operations log below. Of the timestamped activities it records, which happened earliest? Reply with only the name of the equipment involved.",
+        EVENT_LOG,
+        "contains",
+        "coolant",
+      ),
+      retrieval(
+        "Latest event",
+        "Read the operations log below. Of the timestamped activities it records, which happened latest? Reply with only the name of the equipment involved.",
+        EVENT_LOG,
+        "contains",
+        "generator",
+      ),
+      retrieval(
+        "Count occurrences",
+        `Read the operations log below and count how many times a line reports 'Flag: AMBER'.${NUMERIC_SUFFIX}`,
+        FLAG_LOG,
+        "numeric",
+        "4",
+      ),
+      retrieval(
+        "Absent fact",
+        "Read the operations log below and reply with only the radiation dosimeter reading. If the log does not mention a radiation dosimeter reading, reply with exactly: NOT FOUND",
+        SERIAL_LOG,
+        "exact",
+        "NOT FOUND",
+      ),
     ],
   },
 ];

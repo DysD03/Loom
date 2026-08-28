@@ -34,7 +34,12 @@ import {
 import { BUILTIN_SUITES } from "./benchmark-suites";
 
 export const MAX_MODELS_PER_RUN = 5;
-const TASK_TIMEOUT_MS = 120_000;
+/**
+ * Generous enough that a slow local model working through a hard task is
+ * measured rather than cut off. A timeout is recorded as a failed cell, so an
+ * over-tight limit would silently score "too slow" as "wrong".
+ */
+const TASK_TIMEOUT_MS = 180_000;
 const JUDGE_TIMEOUT_MS = 60_000;
 const OUTPUT_STORE_MAX = 6_000;
 
@@ -390,7 +395,10 @@ async function streamTask(factory: ModelFactory, task: BenchTask): Promise<TaskM
       model: factory(probe),
       system: BENCH_SYSTEM,
       messages,
-      maxOutputTokens: 2_048,
+      // Headroom for reasoning models: the built-in suites are hard enough that
+      // a chain of thought is expected, and a truncated one loses the trailing
+      // "Answer:" line and scores zero — measuring the cap, not the model.
+      maxOutputTokens: 4_096,
       abortSignal: AbortSignal.timeout(TASK_TIMEOUT_MS),
       onError: () => {}, // surfaced as an error part in the loop below
     });
