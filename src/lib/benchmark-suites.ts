@@ -122,6 +122,27 @@ const numeric = (
   expected,
 });
 
+/**
+ * A multi-turn workflow. Only the final reply is scored, and the last turn is
+ * always written so that answering it needs every earlier turn — a model that
+ * loses the thread at step 3 cannot recover by step 8. `turns[0]` opens the
+ * conversation; the rest are sent in order with the model's replies in between.
+ */
+const workflow = (
+  name: string,
+  category: string,
+  turns: string[],
+  scoring: BenchTask["scoring"],
+  expected: string,
+): BenchTask => ({
+  name,
+  category,
+  prompt: turns[0],
+  followups: turns.slice(1),
+  scoring,
+  expected,
+});
+
 /** Long-context retrieval probe: one document, one precisely checkable answer. */
 const retrieval = (
   name: string,
@@ -138,29 +159,52 @@ const retrieval = (
 });
 
 // Shared documents, so the retrieval tasks read like one coherent log set.
-const SERIAL_LOG = factLog("sierra", 20, {
-  4: "The pump serial is RT-1180.",
-  11: "The compressor serial is RT-1108.",
-  17: "The chiller serial is RT-8110.",
+// 30 sections is roughly 3,700 tokens — past the point where a small model's
+// attention starts dropping the middle of the context.
+const SERIAL_LOG = factLog("sierra", 30, {
+  6: "The pump serial is RT-1180.",
+  16: "The compressor serial is RT-1108.",
+  26: "The chiller serial is RT-8110.",
 });
 
-const TALLY_LOG = factLog("tango", 20, {
-  3: "Pallet A holds 34 crates.",
-  9: "Pallet B holds 57 crates.",
-  16: "Pallet C holds 21 crates.",
+const TALLY_LOG = factLog("tango", 30, {
+  4: "Pallet A holds 34 crates.",
+  13: "Pallet B holds 57 crates.",
+  21: "Pallet C holds 21 crates.",
+  28: "Pallet D holds 46 crates.",
 });
 
-const EVENT_LOG = factLog("echo", 20, {
-  5: "At 02:10 the intake filter was swapped.",
-  12: "At 01:45 the coolant loop was purged.",
-  18: "At 03:20 the backup generator was tested.",
+const EVENT_LOG = factLog("echo", 30, {
+  7: "At 02:10 the intake filter was swapped.",
+  18: "At 01:45 the coolant loop was purged.",
+  27: "At 03:20 the backup generator was tested.",
 });
 
-const FLAG_LOG = factLog("foxtrot", 20, {
-  2: "Flag: AMBER.",
-  7: "Flag: AMBER.",
-  13: "Flag: AMBER.",
-  18: "Flag: AMBER.",
+const FLAG_LOG = factLog("foxtrot", 30, {
+  3: "Flag: AMBER.",
+  9: "Flag: RED.",
+  14: "Flag: AMBER.",
+  19: "Flag: RED.",
+  22: "Flag: AMBER.",
+  29: "Flag: RED.",
+});
+
+/** Two facts that must be joined: unit → crew, then crew → supervisor. */
+const HOP_LOG = factLog("hotel", 30, {
+  8: "Unit 7 is maintained by crew Delta.",
+  12: "Crew Bravo reports to supervisor Ellison.",
+  24: "Crew Delta reports to supervisor Nakamura.",
+});
+
+/** A stated value that is corrected much later — the later one is current. */
+const REVISION_LOG = factLog("romeo", 30, {
+  5: "The relief valve rating is 12 bar.",
+  25: "Correction: the relief valve rating is 15 bar, superseding the earlier entry.",
+});
+
+/** Deliberately long: ~5,000 tokens with a single needle far from both ends. */
+const DEEP_LOG = factLog("delta", 40, {
+  23: "The auxiliary array controller is addressed at node 5512.",
 });
 
 export const BUILTIN_SUITES: BuiltinSuite[] = [
@@ -357,6 +401,42 @@ export const BUILTIN_SUITES: BuiltinSuite[] = [
         "A car uses 7 litres of fuel per 100 km. Fuel costs $1.80 per litre. What is the fuel cost in dollars for a 250 km trip?",
         "31.5",
       ),
+      numeric(
+        "Probability without replacement",
+        "probability",
+        "A bag holds 3 red marbles and 5 blue marbles. Two marbles are drawn at random without replacement. What is the probability that both are red, as a percentage rounded to the nearest whole number?",
+        "11",
+      ),
+      numeric(
+        "Binary to decimal",
+        "math",
+        "What is the decimal value of the binary number 101101?",
+        "45",
+      ),
+      numeric(
+        "Inclusive date range",
+        "logic",
+        "How many days are there from 1 March 2026 to 15 April 2026, counting both the first and the last day?",
+        "46",
+      ),
+      numeric(
+        "Circle in a square",
+        "math",
+        "A circle is inscribed in a square whose sides are 10 cm long. What is the area, in square centimetres, of the region inside the square but outside the circle? Round to two decimal places.",
+        "21.46",
+      ),
+      numeric(
+        "Weighted average",
+        "math",
+        "A student scores 78 on a test weighted at 40% of the grade and 91 on a test weighted at 60%. What is the weighted average score, to one decimal place?",
+        "85.8",
+      ),
+      mcq(
+        "Seating constraints",
+        "logic",
+        "Three friends P, Q and R sit in a row of three seats. P is not at either end. Q sits somewhere to the left of R. Who is at the left-hand end? A) P B) Q C) R D) It cannot be determined.",
+        "B",
+      ),
     ],
   },
   {
@@ -435,6 +515,42 @@ export const BUILTIN_SUITES: BuiltinSuite[] = [
         "Big-O of binary search",
         "computing",
         "What is the worst-case time complexity of binary search on a sorted array of n elements? A) O(1) B) O(log n) C) O(n) D) O(n log n).",
+        "B",
+      ),
+      mcq(
+        "Scalar quantity",
+        "science",
+        "Which of these is a scalar quantity? A) Velocity B) Displacement C) Speed D) Acceleration.",
+        "C",
+      ),
+      mcq(
+        "Merge sort space",
+        "computing",
+        "What is the auxiliary space complexity of the standard merge sort on an array of n elements? A) O(1) B) O(log n) C) O(n) D) O(n log n).",
+        "C",
+      ),
+      mcq(
+        "Treaty of Rome",
+        "history",
+        "Which treaty established the European Economic Community? A) The Treaty of Rome B) The Treaty of Maastricht C) The Treaty of Lisbon D) The Treaty of Paris.",
+        "A",
+      ),
+      mcq(
+        "Doppler effect",
+        "science",
+        "For an observer moving relative to a wave source, the Doppler effect changes which quantity? A) The wave's amplitude B) The observed frequency C) The wave's speed through the medium D) The source's power output.",
+        "B",
+      ),
+      mcq(
+        "Tritone",
+        "arts",
+        "In twelve-tone equal temperament, how many semitones does a tritone span? A) 5 B) 6 C) 7 D) 8.",
+        "B",
+      ),
+      mcq(
+        "Non-comparison sort",
+        "computing",
+        "Which of these sorting algorithms is NOT comparison-based? A) Heapsort B) Radix sort C) Merge sort D) Quicksort.",
         "B",
       ),
     ],
@@ -528,6 +644,40 @@ export const BUILTIN_SUITES: BuiltinSuite[] = [
         scoring: "exact",
         expected: "orbit",
       },
+      {
+        name: "Three four-letter words",
+        category: "instructions",
+        prompt:
+          "Write exactly three words, each exactly four letters long, separated by single spaces. Reply with only those three words.",
+        scoring: "regex",
+        expected: "^\\W*[a-z]{4}\\s+[a-z]{4}\\s+[a-z]{4}\\W*$",
+      },
+      {
+        name: "Substitution list",
+        category: "instructions",
+        prompt:
+          "Reply with the numbers 1 to 10 in order, comma-separated on one line, except that every multiple of 3 is replaced by the word fizz. No other text.",
+        scoring: "regex",
+        expected:
+          "^\\W*1\\s*,\\s*2\\s*,\\s*fizz\\s*,\\s*4\\s*,\\s*5\\s*,\\s*fizz\\s*,\\s*7\\s*,\\s*8\\s*,\\s*fizz\\s*,\\s*10\\W*$",
+      },
+      {
+        name: "Deeply nested JSON",
+        category: "json",
+        prompt:
+          "Return only a JSON object with a key 'config' whose value is an object containing: 'name' set to the string loom, 'limits' set to an object with 'max' 10 and 'min' 2, and 'tags' set to an array of the two strings a and b in that order.",
+        scoring: "json",
+        expected:
+          '{"config":{"name":"loom","limits":{"max":10,"min":2},"tags":["a","b"]}}',
+      },
+      {
+        name: "Twelve words without S",
+        category: "instructions",
+        prompt:
+          "Write a single sentence of exactly twelve words in which no word contains the letter 's'. Reply with only the sentence.",
+        scoring: "regex",
+        expected: "^(?=[^s]*$)\\s*\\S+(\\s+\\S+){11}\\s*$",
+      },
     ],
   },
   {
@@ -591,6 +741,178 @@ export const BUILTIN_SUITES: BuiltinSuite[] = [
         SERIAL_LOG,
         "exact",
         "NOT FOUND",
+      ),
+      retrieval(
+        "Two-hop join",
+        "Read the operations log below. Work out which supervisor is ultimately responsible for Unit 7, and reply with only that supervisor's name.",
+        HOP_LOG,
+        "contains",
+        "Nakamura",
+      ),
+      retrieval(
+        "Superseded value",
+        `Read the operations log below and give the relief valve's current rating in bar, taking any corrections into account.${NUMERIC_SUFFIX}`,
+        REVISION_LOG,
+        "numeric",
+        "15",
+      ),
+      retrieval(
+        "Selective count",
+        `Read the operations log below and count how many lines report 'Flag: RED'. Do not count any other flag colour.${NUMERIC_SUFFIX}`,
+        FLAG_LOG,
+        "numeric",
+        "3",
+      ),
+      retrieval(
+        "Needle in a deep log",
+        "Read the operations log below and reply with only the node address of the auxiliary array controller.",
+        DEEP_LOG,
+        "contains",
+        "5512",
+      ),
+    ],
+  },
+  {
+    id: "builtin-workflows",
+    name: "Long Workflows",
+    description:
+      "10 multi-turn procedures of 5–8 turns each: running ledgers, inventory edits, retracted rules, conflicting updates, and a chain where every step feeds the next. Only the final answer is scored, and it needs every earlier turn — so drifting once ends the task. The slowest suite (~60 requests per model) and the one that most resembles real agent work.",
+    tasks: [
+      workflow(
+        "Running ledger",
+        "state",
+        [
+          "You are tracking a single running balance for me. It starts at 1000. Do not show any working. Reply with only: ok",
+          "Deposit 250. Reply with only: ok",
+          "Withdraw 400. Reply with only: ok",
+          "Deposit 75. Reply with only: ok",
+          "Cancel that withdrawal of 400 — it should never have been applied. Reply with only: ok",
+          "Withdraw 130. Reply with only: ok",
+          `What is the current balance?${NUMERIC_SUFFIX}`,
+        ],
+        "numeric",
+        "1195",
+      ),
+      workflow(
+        "Inventory edits",
+        "state",
+        [
+          "You are tracking an inventory. It starts empty. Reply with only: ok",
+          "Add 12 bolts and 5 nuts. Reply with only: ok",
+          "Add 7 more bolts. Reply with only: ok",
+          "Remove 4 nuts. Reply with only: ok",
+          "Add 3 washers and 2 nuts. Reply with only: ok",
+          "Remove 6 bolts. Reply with only: ok",
+          `How many bolts are in the inventory now?${NUMERIC_SUFFIX}`,
+        ],
+        "numeric",
+        "13",
+      ),
+      workflow(
+        "Format lock",
+        "constraints",
+        [
+          "For the rest of this conversation, always reply in lowercase, no matter how I capitalise things. Reply with only: ok",
+          "What is the capital of FRANCE? Reply with only the city name.",
+          "Name the LARGEST planet in the solar system. Reply with only its name.",
+          "What is 6 times 7? Reply with only the number.",
+          "Now reply with only this word, applying the rule you were given: BENCHMARK",
+        ],
+        "exact",
+        "benchmark",
+      ),
+      workflow(
+        "List building",
+        "state",
+        [
+          "We are building a list of strings together. It currently contains exactly one item: a. Reply with only: ok",
+          "Append b to the end. Reply with only: ok",
+          "Append c to the end. Reply with only: ok",
+          "Remove a from the list. Reply with only: ok",
+          "Insert d at the very front. Reply with only: ok",
+          "Return only the current list as a JSON array of strings, in order.",
+        ],
+        "json",
+        '["d","b","c"]',
+      ),
+      workflow(
+        "Retracted rule",
+        "constraints",
+        [
+          "From now on, end every reply with the word END. Reply now, following that rule.",
+          "What is 3 times 3? Reply with the number, still following the rule.",
+          "Forget the rule about END. Do not add it to any further replies. Reply with only: understood",
+          "What is 5 times 5? Reply with only the number.",
+        ],
+        "exact",
+        "25",
+      ),
+      workflow(
+        "Delayed recall",
+        "memory",
+        [
+          "Remember these three code words, in this order: FALCON, LANTERN, MERIDIAN. Reply with only: stored",
+          "Put the code words aside. What is 7 plus 8? Reply with only the number.",
+          "Name any country in Europe. Reply with only the name.",
+          "What is the third letter of the English alphabet? Reply with only that letter.",
+          "How many code words did I give you? Reply with only the number.",
+          "Now reply with only the SECOND code word I gave you at the start, in lowercase.",
+        ],
+        "exact",
+        "lantern",
+      ),
+      workflow(
+        "Chained computation",
+        "state",
+        [
+          "We are going to do a chain of calculations. Start with the number 5. Reply with only: 5",
+          "Double it. Reply with only the new result.",
+          "Add 6 to it. Reply with only the new result.",
+          "Halve it. Reply with only the new result.",
+          "Square it. Reply with only the new result.",
+          `Subtract 14 from it and give the final value.${NUMERIC_SUFFIX}`,
+        ],
+        "numeric",
+        "50",
+      ),
+      workflow(
+        "Conflicting updates",
+        "state",
+        [
+          "Record this profile. Name: Dana. City: Oslo. Role: analyst. Reply with only: ok",
+          "Update the city to Bergen. Reply with only: ok",
+          "Update the role to engineer. Reply with only: ok",
+          "Revert the city back to what it was originally. Reply with only: ok",
+          "Update the role to lead engineer. Reply with only: ok",
+          "Return only a JSON object with the keys name, city and role for the current profile.",
+        ],
+        "json",
+        '{"name":"Dana","city":"Oslo","role":"lead engineer"}',
+      ),
+      workflow(
+        "Cross-turn join",
+        "memory",
+        [
+          "Note these staff assignments: Ana works in Payroll, Bo works in Logistics, Cy works in Payroll. Reply with only: ok",
+          "Note these department locations: Payroll is in Building 4, Logistics is in Building 9. Reply with only: ok",
+          "Unrelated question: what is 12 minus 5? Reply with only the number.",
+          `Which building number does Cy work in?${NUMERIC_SUFFIX}`,
+        ],
+        "numeric",
+        "4",
+      ),
+      workflow(
+        "Accumulated constraints",
+        "constraints",
+        [
+          "We are drafting a product code together. Rule 1: it must start with LM. Reply with only: ok",
+          "Rule 2: it must be exactly 6 characters long. Reply with only: ok",
+          "Rule 3: it must end with the digit 7. Reply with only: ok",
+          "Rule 4: every character between the LM and the final 7 must be a digit. Reply with only: ok",
+          "Now give a product code satisfying all four rules, and nothing else.",
+        ],
+        "regex",
+        "^\\W*LM\\d{3}7\\W*$",
       ),
     ],
   },
