@@ -1,3 +1,5 @@
+import type { ProviderKind } from "./models";
+
 /**
  * Benchmark task model + deterministic scoring. Pure functions shared by the
  * server executor and the client views — no zod, no server-only imports. The
@@ -139,6 +141,8 @@ export type LatencyPhases = Record<PhaseKey, number>;
 
 export interface ModelSummary {
   model: string;
+  /** Which endpoint served this model — decides how its cost is billed. */
+  provider: ProviderKind;
   /** Unique display name (id without redundant path segments). */
   label: string;
   /** Mean score over completed scored (non-timing) tasks, 0..1. */
@@ -170,6 +174,11 @@ export interface ModelSummary {
   interToken: { p50: number; p95: number } | null;
   /** Time per output token (decode window ÷ output tokens), ms. */
   avgTpotMs: number | null;
+  /**
+   * The discarded warmup request's wall clock — mostly weight loading. Excluded
+   * from every average above; null when the model was already warm or failed.
+   */
+  coldStartMs: number | null;
 }
 
 export interface CategorySummary {

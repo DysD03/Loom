@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { BarChart, ChartLegend, seriesColor } from "@/components/dashboards/charts";
 import { CostPanel } from "./cost";
+import type { TokenPrice } from "@/lib/benchmark-cost";
 import { PerformancePanel } from "./performance";
 import type { BenchmarkRunStatus } from "@/db/schema";
 import {
@@ -34,6 +35,8 @@ export interface RunViewData {
   error: string | null;
   startedAt: string | null;
   finishedAt: string | null;
+  /** Sampling temperature this run used; 0 means greedy and reproducible. */
+  temperature: number;
 }
 
 export interface RunCostInfo {
@@ -115,10 +118,12 @@ export function RunView({
   run,
   summary,
   cost,
+  pricing,
 }: {
   run: RunViewData;
   summary: RunSummaryView;
   cost: RunCostInfo | null;
+  pricing: TokenPrice[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -201,6 +206,16 @@ export function RunView({
       <header className="flex h-12 shrink-0 items-center gap-3 border-b px-4">
         <p className="min-w-0 flex-1 truncate text-sm font-medium">{run.title}</p>
         <span className="text-muted-foreground hidden text-xs sm:inline">{run.suiteName}</span>
+        <span
+          className="text-muted-foreground hidden text-xs md:inline"
+          title={
+            run.temperature === 0
+              ? "Greedy decoding — re-running this suite should reproduce these answers"
+              : "Sampling is on, so accuracy will vary between runs"
+          }
+        >
+          temp {run.temperature}
+        </span>
         <Badge className={badge.className}>{badge.label}</Badge>
         {live ? (
           <Button variant="outline" size="sm" onClick={cancel} disabled={isPending} className="gap-1.5">
@@ -364,14 +379,18 @@ export function RunView({
                 <CostPanel
                   models={summary.models.map((m, mi) => ({
                     label: m.label,
+                    model: m.model,
                     color: modelColors[mi],
+                    local: m.provider === "local" || m.provider === "ollama",
                     totalLatencyMs: m.totalLatencyMs,
+                    totalPromptTokens: m.totalPromptTokens,
                     totalOutputTokens: m.totalOutputTokens,
                     avgTokensPerSecond: m.avgTokensPerSecond,
                   }))}
                   rate={cost?.perHour ?? null}
                   rateSource={cost?.source ?? null}
                   wallClockMs={wallClockMs}
+                  pricing={pricing}
                 />
               </section>
 

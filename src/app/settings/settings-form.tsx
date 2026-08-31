@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import type { SettingsInput } from "@/lib/settings";
 import type { PingResult } from "@/lib/llm";
+import { parseTokenPricing, type TokenPrice } from "@/lib/benchmark-cost";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -66,6 +67,9 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
   const [costPerHour, setCostPerHour] = useState(
     initial.computeCostPerHour > 0 ? String(initial.computeCostPerHour) : "",
   );
+  const [pricing, setPricing] = useState<TokenPrice[]>(() =>
+    parseTokenPricing(initial.tokenPricing),
+  );
   const [isSaving, startSaving] = useTransition();
   /** Which endpoint has a test in flight, if any. */
   const [testing, setTesting] = useState<"local" | "ollama" | null>(null);
@@ -80,6 +84,7 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
         await updateSettings({
           ...form,
           computeCostPerHour: Number.isFinite(rate) && rate > 0 ? rate : 0,
+          tokenPricing: JSON.stringify(pricing.filter((row) => row.match.trim() !== "")),
         });
         toast.success("Settings saved");
       } catch (err) {
@@ -333,10 +338,100 @@ export function SettingsForm({ initial }: { initial: SettingsInput }) {
               onChange={(e) => setCostPerHour(e.target.value)}
               autoComplete="off"
             />
-            <p className="text-muted-foreground text-xs">
+              <p className="text-muted-foreground text-xs">
               Empty or 0 hides the cost estimates on the Benchmarks tab.
             </p>
           </div>
+
+          <Separator />
+
+          <div className="space-y-2">
+            <Label>Metered model pricing</Label>
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              Cloud providers bill per token, so the $/hour above does not apply to them —
+              without a price here their cost simply reads “—” rather than a wrong number.
+              Match on a model id prefix: <code className="bg-muted rounded px-1">anthropic/</code>{" "}
+              covers a whole provider, a full id pins one model, and the longest match wins.
+              Rates are per 1M tokens.
+            </p>
+            <div className="space-y-2">
+              {pricing.map((row, i) => (
+                <div key={i} className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-40 flex-1 space-y-1">
+                    <Label htmlFor={`price-match-${i}`} className="text-xs">
+                      Model id prefix
+                    </Label>
+                    <Input
+                      id={`price-match-${i}`}
+                      value={row.match}
+                      placeholder="anthropic/claude-sonnet-4-5"
+                      onChange={(e) =>
+                        setPricing((prev) =>
+                          prev.map((r, j) => (j === i ? { ...r, match: e.target.value } : r)),
+                        )
+                      }
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div className="w-28 space-y-1">
+                    <Label htmlFor={`price-in-${i}`} className="text-xs">
+                      $ / 1M in
+                    </Label>
+                    <Input
+                      id={`price-in-${i}`}
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={row.input}
+                      onChange={(e) =>
+                        setPricing((prev) =>
+                          prev.map((r, j) =>
+                            j === i ? { ...r, input: Number(e.target.value) || 0 } : r,
+                          ),
+                        )
+                      }
+                    />
+                  </div>
+                  <div className="w-28 space-y-1">
+                    <Label htmlFor={`price-out-${i}`} className="text-xs">
+                      $ / 1M out
+                    </Label>
+                    <Input
+                      id={`price-out-${i}`}
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={row.output}
+                      onChange={(e) =>
+                        setPricing((prev) =>
+                          prev.map((r, j) =>
+                            j === i ? { ...r, output: Number(e.target.value) || 0 } : r,
+                          ),
+                        )
+                      }
+                    />
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Remove pricing row ${i + 1}`}
+                    onClick={() => setPricing((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    ✕
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPricing((prev) => [...prev, { match: "", input: 0, output: 0 }])}
+            >
+              Add pricing row
+            </Button>
+          </div>
+
           <Separator />
           <Button onClick={handleSave} disabled={isSaving}>
             {isSaving ? "Saving…" : "Save"}

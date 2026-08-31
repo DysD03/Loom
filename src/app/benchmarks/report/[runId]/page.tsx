@@ -5,6 +5,7 @@ import { ReportToolbar } from "@/components/benchmarks/report-toolbar";
 import { getRun, listResults, summarizeRun } from "@/lib/benchmarks";
 import { getSettings } from "@/lib/settings";
 import { parseSections } from "@/lib/report";
+import { parseTokenPricing } from "@/lib/benchmark-cost";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,8 @@ export default async function BenchmarkReportPage({
   if (!run) notFound();
 
   const results = listResults(run.id);
-  const settingsRate = getSettings().computeCostPerHour;
+  const settings = getSettings();
+  const settingsRate = settings.computeCostPerHour;
   const costPerHour = run.costPerHour ?? (settingsRate > 0 ? settingsRate : null);
 
   return (
@@ -40,12 +42,14 @@ export default async function BenchmarkReportPage({
           suiteName: run.suiteName,
           status: run.status,
           createdAt: run.createdAt,
+          temperature: run.temperature,
           startedAt: run.startedAt,
           finishedAt: run.finishedAt,
         }}
         summary={summarizeRun(run, results)}
         sections={parseSections(sectionsParam)}
         costPerHour={costPerHour}
+        pricing={parseTokenPricing(settings.tokenPricing)}
         generatedAt={new Date().toISOString()}
       />
     </div>

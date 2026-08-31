@@ -13,7 +13,8 @@ import {
   type BenchmarkRun,
   type BenchmarkSuite,
 } from "@/db/schema";
-import { getChatModel, getUtilityModel } from "./provider";
+import { availableProviders, getChatModel, getUtilityModel } from "./provider";
+import { parseModel } from "./models";
 import { getSettings } from "./settings";
 import { costOfMs } from "./benchmark-cost";
 import {
@@ -34,6 +35,13 @@ import {
 import { BUILTIN_SUITES } from "./benchmark-suites";
 
 export const MAX_MODELS_PER_RUN = 5;
+export const MAX_TEMPERATURE = 2;
+
+/** Keeps a user-supplied temperature inside what OpenAI-compatible servers accept. */
+export function clampTemperature(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  return Math.min(Math.max(value, 0), MAX_TEMPERATURE);
+}
 /**
  * Generous enough that a slow local model working through a hard task is
  * measured rather than cut off. A timeout is recorded as a failed cell, so an
@@ -156,6 +164,23 @@ export function getRun(id: string): BenchmarkRun | undefined {
   return db.select().from(benchmarkRuns).where(eq(benchmarkRuns.id, id)).get();
 }
 
+/** Timing of the discarded warmup request, per model. */
+export interface ColdStart {
+  latencyMs: number;
+  ttftMs: number | null;
+}
+
+export function loadColdStarts(run: BenchmarkRun): Record<string, ColdStart> {
+  try {
+    const parsed = JSON.parse(run.coldStarts) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, ColdStart>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 export function loadModels(run: BenchmarkRun): string[] {
   try {
     const parsed = JSON.parse(run.models) as unknown;
@@ -169,6 +194,8 @@ export function createRun(input: {
   suite: BenchmarkSuite;
   models: string[];
   title?: string;
+  /** Sampling temperature for every request; defaults to 0 for reproducibility. */
+  temperature?: number;
 }): BenchmarkRun {
   const models = [...new Set(input.models.map((m) => m.trim()).filter(Boolean))].slice(
     0,
@@ -188,6 +215,7 @@ export function createRun(input: {
       tasks: input.suite.tasks,
       status: "pending",
       costPerHour: rate > 0 ? rate : null,
+      temperature: clampTemperature(input.temperature),
     })
     .returning()
     .get();
@@ -195,7 +223,12 @@ export function createRun(input: {
 
 function updateRun(
   id: string,
-  set: Partial<Pick<BenchmarkRun, "status" | "error" | "title" | "startedAt" | "finishedAt">>,
+  set: Partial<
+    Pick<
+      BenchmarkRun,
+      "status" | "error" | "title" | "startedAt" | "finishedAt" | "coldStarts"
+    >
+  >,
 ): void {
   db.update(benchmarkRuns)
     .set({ ...set, updatedAt: new Date().toISOString() })
@@ -288,6 +321,8 @@ async function judgeOutput(task: BenchTask, output: string): Promise<TaskScore> 
     model,
     system: JUDGE_SYSTEM,
     prompt,
+    // A grader that changes its mind between runs is worse than no grader.
+    temperature: 0,
     abortSignal: AbortSignal.timeout(JUDGE_TIMEOUT_MS),
   });
   const match = text.match(/"score"\s*:\s*(\d+(?:\.\d+)?)/) ?? text.match(/\b(\d+(?:\.\d+)?)\b/);
@@ -366,7 +401,11 @@ const addPhases = (a: LatencyPhases, b: LatencyPhases): LatencyPhases => ({
  * first turn alone, because follow-up turns usually hit the server's prefix
  * cache and would flatter the number. Inter-token gaps are pooled across turns.
  */
-async function streamTask(factory: ModelFactory, task: BenchTask): Promise<TaskMetrics> {
+async function streamTask(
+  factory: ModelFactory,
+  task: BenchTask,
+  temperature: number,
+): Promise<TaskMetrics> {
   const turns = [task.prompt, ...(task.followups ?? [])].map((t) => t.trim()).filter(Boolean);
   if (turns.length === 0) throw new Error("Task has no prompt.");
 
@@ -395,6 +434,7 @@ async function streamTask(factory: ModelFactory, task: BenchTask): Promise<TaskM
       model: factory(probe),
       system: BENCH_SYSTEM,
       messages,
+      temperature,
       // Headroom for reasoning models: the built-in suites are hard enough that
       // a chain of thought is expected, and a truncated one loses the trailing
       // "Answer:" line and scores zero — measuring the cap, not the model.
@@ -475,6 +515,39 @@ async function streamTask(factory: ModelFactory, task: BenchTask): Promise<TaskM
   };
 }
 
+/** A trivial request, so the warmup costs as little generation time as possible. */
+const WARMUP_TASK: BenchTask = {
+  name: "warmup",
+  category: "warmup",
+  prompt: "Reply with only the word: ready",
+  scoring: "timing",
+};
+
+/**
+ * Sends one throwaway request before any task is timed.
+ *
+ * A local server loads model weights on first use, and with several models in a
+ * run it may unload one to make room for the next. That load lands entirely in
+ * the first timed request, inflating that model's latency, TTFT and prefill by
+ * seconds — invisibly, because the number still looks like a plausible
+ * measurement. Discarding one request removes it from every average; the cost
+ * of the load is worth reporting on its own, so it is returned rather than
+ * thrown away.
+ */
+async function warmUp(
+  factory: ModelFactory,
+  temperature: number,
+): Promise<ColdStart | null> {
+  try {
+    const metrics = await streamTask(factory, WARMUP_TASK, temperature);
+    return { latencyMs: metrics.latencyMs, ttftMs: metrics.ttftMs };
+  } catch {
+    // A failing warmup is not itself a result — the tasks that follow will
+    // record the real error against the cells the user can see.
+    return null;
+  }
+}
+
 /**
  * Runs every model × task combination sequentially (one request at a time, so
  * latency and tokens/sec stay uncontended — important for local servers that
@@ -497,6 +570,8 @@ export async function executeRun(runId: string): Promise<void> {
     startedAt: new Date().toISOString(),
   });
 
+  const coldStarts: Record<string, ColdStart> = {};
+
   try {
     for (const modelName of models) {
       // Resolve once to surface configuration errors, then rebuild per turn so
@@ -509,6 +584,14 @@ export async function executeRun(runId: string): Promise<void> {
           : { error: "Empty model id." };
       } catch (err) {
         built = { error: err instanceof Error ? err.message : "Failed to build the model." };
+      }
+
+      if (!("error" in built)) {
+        const cold = await warmUp(built.factory, run.temperature);
+        if (cold) {
+          coldStarts[modelName] = cold;
+          updateRun(runId, { coldStarts: JSON.stringify(coldStarts) });
+        }
       }
 
       for (let i = 0; i < tasks.length; i++) {
@@ -532,7 +615,7 @@ export async function executeRun(runId: string): Promise<void> {
         const task = tasks[i];
         const startedAt = Date.now();
         try {
-          const metrics = await streamTask(built.factory, task);
+          const metrics = await streamTask(built.factory, task, run.temperature);
           const scored =
             task.scoring === "judge"
               ? await judgeOutput(task, metrics.finalText).catch(
@@ -655,6 +738,8 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
   const models = loadModels(run);
   const tasks = loadTasks(run);
   const labels = modelLabels(models);
+  const available = availableProviders(getSettings());
+  const coldStarts = loadColdStarts(run);
   const byKey = new Map(results.map((r) => [`${r.model} ${r.taskIndex}`, r]));
   const cell = (model: string, taskIndex: number): TaskCellView | null => {
     const r = byKey.get(`${model} ${taskIndex}`);
@@ -697,6 +782,7 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
     const decodeSpeed = describe(positives(rows.map((r) => r.tokensPerSecond)));
     return {
       model,
+      provider: parseModel(model, available).provider,
       label: labels[mi],
       score: mean(scored.map((r) => r.score)) ?? 0,
       passed: scored.filter((r) => r.passed).length,
@@ -716,6 +802,7 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
       decodeSpeed,
       interToken: interTokenSummary(rows),
       avgTpotMs: tpotMs(rows),
+      coldStartMs: coldStarts[model]?.latencyMs ?? null,
     };
   });
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { formatValue, seriesColor } from "@/components/dashboards/charts";
-import { costOfMs, costPerTokens, formatUsd } from "@/lib/benchmark-cost";
+import { costOfMs, estimateCost, formatUsd, type TokenPrice } from "@/lib/benchmark-cost";
 import {
   buildVerdicts,
   isTimingOnly,
@@ -39,6 +39,7 @@ export interface ReportRun {
   suiteName: string;
   status: string;
   createdAt: string;
+  temperature: number;
   startedAt: string | null;
   finishedAt: string | null;
 }
@@ -148,6 +149,7 @@ export function BenchmarkReport({
   summary,
   sections,
   costPerHour,
+  pricing,
   generatedAt,
 }: {
   run: ReportRun;
@@ -155,6 +157,8 @@ export function BenchmarkReport({
   sections: ReportSection[];
   /** Effective $/hour for this run; null when no rate was configured. */
   costPerHour: number | null;
+  /** Per-token rates for metered providers. */
+  pricing: TokenPrice[];
   /** ISO timestamp stamped into the footer, resolved on the server. */
   generatedAt: string;
 }) {
@@ -227,6 +231,10 @@ export function BenchmarkReport({
           <div className="flex gap-1.5">
             <dt className="font-medium">Status</dt>
             <dd>{run.status}</dd>
+          </div>
+          <div className="flex gap-1.5">
+            <dt className="font-medium">Temperature</dt>
+            <dd>{run.temperature === 0 ? "0 (greedy)" : run.temperature}</dd>
           </div>
           {wallClockMs !== null ? (
             <div className="flex gap-1.5">
@@ -369,7 +377,7 @@ export function BenchmarkReport({
       {has("metrics") ? (
         <Section
           title="All metrics"
-          note="Every measured value behind the charts above, one row per model."
+          note="Every measured value behind the charts above, one row per model. Cold start is the discarded warmup request, excluded from the other columns."
         >
           <Table
             head={[
@@ -381,6 +389,7 @@ export function BenchmarkReport({
               "Queue",
               "Prefill",
               "Decode",
+              "Cold start",
             ]}
             rows={models.map((m) => [
               <Swatch key="m" color={colorOf(m)} label={m.label} />,
@@ -393,6 +402,7 @@ export function BenchmarkReport({
               ms(m.phases?.queue ?? null),
               ms(m.phases?.prefill ?? null),
               ms(m.phases?.decode ?? null),
+              ms(m.coldStartMs),
             ])}
           />
         </Section>
@@ -428,26 +438,43 @@ export function BenchmarkReport({
         </Section>
       ) : null}
 
-      {has("cost") && costPerHour !== null ? (
+      {has("cost") && (costPerHour !== null || pricing.length > 0) ? (
         <Section
           title="Cost estimate"
-          note={`Self-reported: measured time × $${costPerHour}/hour. Local inference is never metered — these are the operator's own figures, not a bill.`}
+          note={`Local models are costed as measured time × $${costPerHour ?? 0}/hour, which is self-reported rather than metered; cloud models are costed from their configured per-token price. Not a bill.`}
         >
           <Table
-            head={["Model", "Time", "Est. cost", "Est. $/1M tokens"]}
-            rows={models.map((m) => [
-              <Swatch key="m" color={colorOf(m)} label={m.label} />,
-              formatDuration(m.totalLatencyMs),
-              `~${formatUsd(costOfMs(m.totalLatencyMs, costPerHour))}`,
-              m.avgTokensPerSecond && m.avgTokensPerSecond > 0
-                ? `~${formatUsd(costPerTokens(1_000_000, m.avgTokensPerSecond, costPerHour))}`
-                : "—",
-            ])}
+            head={["Model", "Basis", "Time", "Tokens in/out", "Est. cost"]}
+            rows={models.map((m) => {
+              const local = m.provider === "local" || m.provider === "ollama";
+              const estimate = estimateCost({
+                local,
+                model: m.model,
+                totalLatencyMs: m.totalLatencyMs,
+                promptTokens: m.totalPromptTokens,
+                outputTokens: m.totalOutputTokens,
+                perHour: costPerHour,
+                pricing,
+              });
+              return [
+                <Swatch key="m" color={colorOf(m)} label={m.label} />,
+                estimate.basis === "machine"
+                  ? "machine time"
+                  : estimate.basis === "tokens"
+                    ? "per token"
+                    : "not priced",
+                formatDuration(m.totalLatencyMs),
+                `${m.totalPromptTokens?.toLocaleString("en") ?? "—"} / ${
+                  m.totalOutputTokens?.toLocaleString("en") ?? "—"
+                }`,
+                estimate.amount === null ? "—" : `~${formatUsd(estimate.amount)}`,
+              ];
+            })}
           />
-          {wallClockMs !== null ? (
+          {wallClockMs !== null && costPerHour !== null ? (
             <p className="text-muted-foreground mt-2 text-[10px]">
               Whole run wall clock: {formatDuration(wallClockMs)} ≈ ~
-              {formatUsd(costOfMs(wallClockMs, costPerHour))}
+              {formatUsd(costOfMs(wallClockMs, costPerHour))} of machine time
             </p>
           ) : null}
         </Section>

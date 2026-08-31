@@ -4,14 +4,26 @@ import { useState } from "react";
 import Link from "next/link";
 import { CircleDollarSign } from "lucide-react";
 
-import { costOfMs, costPerTokens, formatUsd } from "@/lib/benchmark-cost";
+import {
+  costOfMs,
+  costPerTokens,
+  estimateCost,
+  formatUsd,
+  priceFor,
+  type TokenPrice,
+} from "@/lib/benchmark-cost";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export interface CostModelRow {
   label: string;
+  /** The stored model id — what a metered price is matched against. */
+  model: string;
   color: string;
+  /** False for cloud providers, which bill per token rather than per hour. */
+  local: boolean;
   totalLatencyMs: number;
+  totalPromptTokens: number | null;
   totalOutputTokens: number | null;
   avgTokensPerSecond: number | null;
 }
@@ -33,13 +45,16 @@ const numberOr = (text: string, fallback: number): number => {
  */
 function Calculator({ defaultTps, rate }: { defaultTps: number | null; rate: number }) {
   const [tokensText, setTokensText] = useState("1000000");
-  const [tpsText, setTpsText] = useState(defaultTps !== null ? defaultTps.toFixed(1) : "");
+  const [tpsText, setTpsText] = useState(
+    defaultTps !== null ? defaultTps.toFixed(1) : "",
+  );
   const [rateText, setRateText] = useState(String(rate));
 
   const tokens = numberOr(tokensText, 0);
   const tps = numberOr(tpsText, 0);
   const perHour = numberOr(rateText, 0);
-  const cost = tokens > 0 && tps > 0 && perHour > 0 ? costPerTokens(tokens, tps, perHour) : null;
+  const cost =
+    tokens > 0 && tps > 0 && perHour > 0 ? costPerTokens(tokens, tps, perHour) : null;
 
   return (
     <div className="bg-card/80 flex min-w-0 flex-col gap-3 rounded-lg border p-4">
@@ -132,24 +147,34 @@ export function CostPanel({
   rate,
   rateSource,
   wallClockMs,
+  pricing,
 }: {
   models: CostModelRow[];
   /** Effective $/hour for this run; null = no rate configured anywhere. */
   rate: number | null;
   rateSource: "snapshot" | "settings" | null;
   wallClockMs: number | null;
+  /** Per-token rates for metered providers, from Settings. */
+  pricing: TokenPrice[];
 }) {
-  if (rate === null) {
+  const localModels = models.filter((m) => m.local);
+  const meteredModels = models.filter((m) => !m.local);
+  const meteredUnpriced = meteredModels.filter((m) => !priceFor(m.model, pricing));
+
+  // Nothing to show only when neither basis is configured for anything here.
+  if (rate === null && meteredModels.every((m) => !priceFor(m.model, pricing))) {
     return (
       <div className="bg-card/80 flex items-start gap-3 rounded-lg border border-dashed p-4">
         <CircleDollarSign className="text-muted-foreground mt-0.5 size-4 shrink-0" />
         <p className="text-muted-foreground text-xs leading-relaxed">
-          No machine rate configured. Set your compute cost ($/hour) in{" "}
+          No cost basis configured. In{" "}
           <Link href="/settings" className="text-neon-cyan underline underline-offset-2">
             Settings → Compute cost
           </Link>{" "}
-          to see estimated $ per run and per 1K/1M tokens here. Local inference is never
-          metered — this is purely your own estimate.
+          set a machine <strong>$/hour</strong> for models running on your own hardware,
+          and <strong>per-token pricing</strong> for any metered cloud model. The two are
+          billed differently, so each is estimated on its own basis — local inference is
+          never metered, and that figure is purely your own estimate.
         </p>
       </div>
     );
@@ -166,47 +191,99 @@ export function CostPanel({
         <div className="bg-card/80 min-w-0 rounded-lg border p-4">
           <h3 className="mb-3 text-sm font-medium">Estimated run cost</h3>
           <ul className="space-y-2">
-            {models.map((m) => (
-              <li key={m.label} className="flex items-baseline gap-2 text-xs">
-                <span
-                  className="inline-block size-2 shrink-0 self-center rounded-full"
-                  style={{ background: m.color }}
-                />
-                <span className="min-w-0 flex-1 truncate font-mono">{m.label}</span>
-                <span
-                  className="text-neon-green font-medium"
-                  style={{ fontVariantNumeric: "tabular-nums" }}
-                >
-                  ~{formatUsd(costOfMs(m.totalLatencyMs, rate))}
-                </span>
-                <span
-                  className="text-muted-foreground w-52 text-right"
-                  style={{ fontVariantNumeric: "tabular-nums" }}
-                >
-                  {formatDuration(m.totalLatencyMs)}
-                  {m.totalOutputTokens !== null
-                    ? ` · ${m.totalOutputTokens.toLocaleString("en")} tok`
-                    : ""}
-                  {m.avgTokensPerSecond !== null && m.avgTokensPerSecond > 0
-                    ? ` · ~${formatUsd(costPerTokens(1_000_000, m.avgTokensPerSecond, rate))}/1M`
-                    : ""}
-                </span>
-              </li>
-            ))}
+            {models.map((m) => {
+              const estimate = estimateCost({
+                local: m.local,
+                model: m.model,
+                totalLatencyMs: m.totalLatencyMs,
+                promptTokens: m.totalPromptTokens,
+                outputTokens: m.totalOutputTokens,
+                perHour: rate,
+                pricing,
+              });
+              const price = m.local ? null : priceFor(m.model, pricing);
+              return (
+                <li key={m.label} className="flex items-baseline gap-2 text-xs">
+                  <span
+                    className="inline-block size-2 shrink-0 self-center rounded-full"
+                    style={{ background: m.color }}
+                  />
+                  <span className="min-w-0 flex-1 truncate font-mono">{m.label}</span>
+                  <span
+                    className={
+                      estimate.amount === null
+                        ? "text-muted-foreground"
+                        : "text-neon-green font-medium"
+                    }
+                    style={{ fontVariantNumeric: "tabular-nums" }}
+                    title={
+                      estimate.basis === "machine"
+                        ? "Machine time × your $/hour rate"
+                        : estimate.basis === "tokens"
+                          ? "Tokens × the configured per-token price"
+                          : "No pricing configured for this model"
+                    }
+                  >
+                    {estimate.amount === null ? "—" : `~${formatUsd(estimate.amount)}`}
+                  </span>
+                  <span
+                    className="text-muted-foreground w-52 text-right"
+                    style={{ fontVariantNumeric: "tabular-nums" }}
+                  >
+                    {formatDuration(m.totalLatencyMs)}
+                    {m.totalOutputTokens !== null
+                      ? ` · ${m.totalOutputTokens.toLocaleString("en")} tok`
+                      : ""}
+                    {price
+                      ? ` · $${price.output}/1M out`
+                      : m.local &&
+                          rate !== null &&
+                          m.avgTokensPerSecond &&
+                          m.avgTokensPerSecond > 0
+                        ? ` · ~${formatUsd(costPerTokens(1_000_000, m.avgTokensPerSecond, rate))}/1M`
+                        : ""}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
-          {wallClockMs !== null ? (
+          {wallClockMs !== null && rate !== null && localModels.length > 0 ? (
             <p className="text-muted-foreground mt-3 text-xs">
               Whole run wall clock: {formatDuration(wallClockMs)} ≈ ~
-              {formatUsd(costOfMs(wallClockMs, rate))}
+              {formatUsd(costOfMs(wallClockMs, rate))} of machine time
+            </p>
+          ) : null}
+          {meteredUnpriced.length > 0 ? (
+            <p className="text-muted-foreground mt-3 text-xs leading-relaxed">
+              {meteredUnpriced.map((m) => m.label).join(", ")}{" "}
+              {meteredUnpriced.length === 1 ? "is" : "are"} billed per token, not by the
+              hour. Add a rate under{" "}
+              <Link
+                href="/settings"
+                className="text-neon-cyan underline underline-offset-2"
+              >
+                Settings → Metered model pricing
+              </Link>{" "}
+              to cost {meteredUnpriced.length === 1 ? "it" : "them"}.
             </p>
           ) : null}
         </div>
-        <Calculator defaultTps={bestTps ?? null} rate={rate} />
+        {rate !== null ? <Calculator defaultTps={bestTps ?? null} rate={rate} /> : null}
       </div>
       <p className="text-muted-foreground text-xs">
-        Self-reported estimate: time × your ${rate}/hr rate
-        {rateSource === "settings" ? " (current Settings value)" : " (rate when the run started)"}.
-        Local inference has no metered billing — treat these as ballpark figures.
+        {localModels.length > 0 && rate !== null ? (
+          <>
+            Local models are estimated as time × your ${rate}/hr rate
+            {rateSource === "settings"
+              ? " (current Settings value)"
+              : " (rate when the run started)"}
+            , which is self-reported, not metered.{" "}
+          </>
+        ) : null}
+        {meteredModels.length > 0
+          ? "Cloud models are costed from their configured per-token price. "
+          : ""}
+        Treat all of these as ballpark figures.
       </p>
     </div>
   );

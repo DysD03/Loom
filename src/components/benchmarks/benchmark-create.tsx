@@ -46,6 +46,7 @@ export function BenchmarkCreate({
   const [suiteId, setSuiteId] = useState<string>(suites[0]?.id ?? "");
   const [models, setModels] = useState<string[]>([]);
   const [title, setTitle] = useState("");
+  const [temperature, setTemperature] = useState("0");
   const [starting, setStarting] = useState(false);
   /** null = list, "new" = creating, otherwise the suite id being edited. */
   const [editing, setEditing] = useState<string | null>(null);
@@ -60,7 +61,12 @@ export function BenchmarkCreate({
       const res = await fetch("/api/benchmark", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ suiteId, models, title: title.trim() || undefined }),
+        body: JSON.stringify({
+          suiteId,
+          models,
+          title: title.trim() || undefined,
+          temperature: Number(temperature) || 0,
+        }),
       });
       const data = (await res.json()) as { runId?: string; error?: string };
       if (!res.ok || !data.runId) {
@@ -146,6 +152,26 @@ export function BenchmarkCreate({
                 placeholder={selectedSuite ? `${selectedSuite.name} shootout` : "Benchmark run"}
                 disabled={starting}
               />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="run-temperature">Temperature</Label>
+              <Input
+                id="run-temperature"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                className="w-32"
+                value={temperature}
+                onChange={(e) => setTemperature(e.target.value)}
+                disabled={starting}
+              />
+              <p className="text-muted-foreground text-xs">
+                0 is greedy decoding, so re-running the same suite against the same model
+                reproduces the same answers — the right default for comparing models. Raise it
+                only to measure how much a model&apos;s accuracy moves with sampling.
+              </p>
             </div>
 
             <Button

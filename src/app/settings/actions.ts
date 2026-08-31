@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { saveSettings, type SettingsInput } from "@/lib/settings";
+import { parseTokenPricing } from "@/lib/benchmark-cost";
 
 export async function updateSettings(input: SettingsInput) {
   const saved = saveSettings({
@@ -17,6 +18,7 @@ export async function updateSettings(input: SettingsInput) {
     openaiApiKey: input.openaiApiKey.trim(),
     googleApiKey: input.googleApiKey.trim(),
     searxngUrl: input.searxngUrl.trim(),
+    tokenPricing: JSON.stringify(parseTokenPricing(input.tokenPricing)),
     computeCostPerHour: Number.isFinite(input.computeCostPerHour)
       ? Math.max(0, input.computeCostPerHour)
       : 0,

@@ -12,6 +12,7 @@ import {
   summarizeRun,
 } from "@/lib/benchmarks";
 import { getSettings } from "@/lib/settings";
+import { parseTokenPricing } from "@/lib/benchmark-cost";
 import type { BenchTask } from "@/lib/benchmark-score";
 
 export const dynamic = "force-dynamic";
@@ -54,9 +55,11 @@ export default async function BenchmarksPage({
             error: active.error,
             startedAt: active.startedAt,
             finishedAt: active.finishedAt,
+            temperature: active.temperature,
           }}
           summary={summarizeRun(active, listResults(active.id))}
           cost={cost}
+          pricing={parseTokenPricing(getSettings().tokenPricing)}
         />
       ) : (
         <BenchmarkCreate

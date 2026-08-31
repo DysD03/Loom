@@ -623,6 +623,11 @@ const COLUMNS: { label: string; hint: string; value: (m: ModelSummary) => string
         : `${Math.round(m.interToken.p50)} / ${Math.round(m.interToken.p95)} ms`,
   },
   {
+    label: "Cold start",
+    hint: "Warmup request, mostly weight loading — excluded from every other column",
+    value: (m) => ms(m.coldStartMs),
+  },
+  {
     label: "Tokens in/out",
     hint: "Prompt and output tokens across the run",
     value: (m) =>

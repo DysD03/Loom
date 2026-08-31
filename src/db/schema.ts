@@ -30,6 +30,12 @@ export const appSettings = sqliteTable("app_settings", {
    * amortization). Powers the benchmark cost estimates; 0 means not configured.
    */
   computeCostPerHour: real("compute_cost_per_hour").notNull().default(0),
+  /**
+   * JSON-encoded TokenPrice[] — per-model $/1M input and output token rates for
+   * metered (cloud) providers. Machine $/hour is the wrong basis for those, and
+   * prices change too often to hardcode, so the user supplies them.
+   */
+  tokenPricing: text("token_pricing").notNull().default("[]"),
   updatedAt: text("updated_at")
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -449,6 +455,18 @@ export const benchmarkRuns = sqliteTable("benchmark_runs", {
   finishedAt: text("finished_at"),
   /** Snapshot of `app_settings.computeCostPerHour` at creation; null = no rate set. */
   costPerHour: real("cost_per_hour"),
+  /**
+   * Sampling temperature used for every request in this run. Defaults to 0 so a
+   * re-run of the same suite against the same model is reproducible; raise it
+   * deliberately to measure sampling variance.
+   */
+  temperature: real("temperature").notNull().default(0),
+  /**
+   * JSON map of model → { latencyMs, ttftMs } for the discarded warmup request.
+   * Kept out of the scored results so weight-loading time never contaminates the
+   * timing averages, but surfaced because cold start is itself worth knowing.
+   */
+  coldStarts: text("cold_starts").notNull().default("{}"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(current_timestamp)`),

@@ -1,9 +1,16 @@
-import { createRun, executeRun, getSuite, MAX_MODELS_PER_RUN } from "@/lib/benchmarks";
+import {
+  clampTemperature,
+  createRun,
+  executeRun,
+  getSuite,
+  MAX_MODELS_PER_RUN,
+} from "@/lib/benchmarks";
 
 interface StartBody {
   suiteId?: string;
   models?: string[];
   title?: string;
+  temperature?: number;
 }
 
 /**
@@ -36,7 +43,12 @@ export async function POST(request: Request) {
     return Response.json({ error: "Benchmark suite not found." }, { status: 404 });
   }
 
-  const run = createRun({ suite, models, title: body.title });
+  const run = createRun({
+    suite,
+    models,
+    title: body.title,
+    temperature: clampTemperature(body.temperature),
+  });
 
   // Fire and forget — the executor owns run status from here.
   void executeRun(run.id).catch(() => {
