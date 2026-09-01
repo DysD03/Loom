@@ -47,6 +47,7 @@ export function BenchmarkCreate({
   const [models, setModels] = useState<string[]>([]);
   const [title, setTitle] = useState("");
   const [temperature, setTemperature] = useState("0");
+  const [repeats, setRepeats] = useState("1");
   const [starting, setStarting] = useState(false);
   /** null = list, "new" = creating, otherwise the suite id being edited. */
   const [editing, setEditing] = useState<string | null>(null);
@@ -66,6 +67,7 @@ export function BenchmarkCreate({
           models,
           title: title.trim() || undefined,
           temperature: Number(temperature) || 0,
+          repeats: Number(repeats) || 1,
         }),
       });
       const data = (await res.json()) as { runId?: string; error?: string };
@@ -152,6 +154,27 @@ export function BenchmarkCreate({
                 placeholder={selectedSuite ? `${selectedSuite.name} shootout` : "Benchmark run"}
                 disabled={starting}
               />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="run-repeats">Samples per task</Label>
+              <Input
+                id="run-repeats"
+                type="number"
+                min="1"
+                max="10"
+                step="1"
+                className="w-32"
+                value={repeats}
+                onChange={(e) => setRepeats(e.target.value)}
+                disabled={starting}
+              />
+              <p className="text-muted-foreground text-xs">
+                One sample gives a score with no error bar, so a 70% and a 75% are
+                indistinguishable. Running each task several times reports accuracy as a
+                confidence interval and marks leaderboard gaps that are not real — at the cost
+                of multiplying the run time.
+              </p>
             </div>
 
             <div className="space-y-1.5">

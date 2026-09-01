@@ -1,4 +1,5 @@
 import {
+  clampRepeats,
   clampTemperature,
   createRun,
   executeRun,
@@ -11,6 +12,7 @@ interface StartBody {
   models?: string[];
   title?: string;
   temperature?: number;
+  repeats?: number;
 }
 
 /**
@@ -48,6 +50,7 @@ export async function POST(request: Request) {
     models,
     title: body.title,
     temperature: clampTemperature(body.temperature),
+    repeats: clampRepeats(body.repeats),
   });
 
   // Fire and forget — the executor owns run status from here.

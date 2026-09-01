@@ -110,6 +110,48 @@ export function describe(values: number[]): Distribution | null {
   };
 }
 
+/**
+ * Wilson score interval for a pass rate. The normal approximation misbehaves at
+ * the edges — a model that passes every one of 12 tasks is not "100% ± 0" — and
+ * a benchmark spends most of its time near those edges, so Wilson is the right
+ * default.
+ */
+export interface Interval {
+  /** Observed pass rate, 0..1. */
+  rate: number;
+  low: number;
+  high: number;
+  passes: number;
+  trials: number;
+}
+
+/** 95% by default (z = 1.96). */
+export function wilson(passes: number, trials: number, z = 1.96): Interval | null {
+  if (trials <= 0) return null;
+  const rate = passes / trials;
+  const z2 = z * z;
+  const denom = 1 + z2 / trials;
+  const centre = rate + z2 / (2 * trials);
+  const spread = z * Math.sqrt((rate * (1 - rate) + z2 / (4 * trials)) / trials);
+  return {
+    rate,
+    low: Math.max(0, (centre - spread) / denom),
+    high: Math.min(1, (centre + spread) / denom),
+    passes,
+    trials,
+  };
+}
+
+/**
+ * Whether two pass rates are distinguishable at all. Overlapping intervals are
+ * treated as a tie — conservative, but the failure it avoids (reading a ranking
+ * into noise) is exactly the one a leaderboard invites.
+ */
+export function separable(a: Interval | null, b: Interval | null): boolean {
+  if (!a || !b) return false;
+  return a.low > b.high || b.low > a.high;
+}
+
 // --- request phases ---
 
 /**
@@ -149,6 +191,10 @@ export interface ModelSummary {
   score: number;
   /** Passed count over scored (non-timing) tasks. */
   passed: number;
+  /** Confidence interval on the pass rate; null when nothing scored ran. */
+  accuracy: Interval | null;
+  /** Samples per task in this run (1 = single-shot). */
+  repeats: number;
   /** Completed cells on scored (non-timing) tasks. */
   scoredCompleted: number;
   /** Completed cells across all tasks (drives run progress). */
@@ -191,6 +237,9 @@ export interface TaskCellView {
   output: string;
   score: number;
   passed: boolean;
+  /** How many samples of this cell ran, and how many of them passed. */
+  samples: number;
+  passCount: number;
   latencyMs: number;
   ttftMs: number | null;
   tokensPerSecond: number | null;

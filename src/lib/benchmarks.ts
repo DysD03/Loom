@@ -23,6 +23,7 @@ import {
   modelLabels,
   percentile,
   scoreDeterministic,
+  wilson,
   type BenchTask,
   type CategorySummary,
   type HistoryEntry,
@@ -36,6 +37,13 @@ import { BUILTIN_SUITES } from "./benchmark-suites";
 
 export const MAX_MODELS_PER_RUN = 5;
 export const MAX_TEMPERATURE = 2;
+export const MAX_REPEATS = 10;
+
+/** Samples per task, bounded so a stray value cannot turn one run into thousands. */
+export function clampRepeats(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 1;
+  return Math.min(Math.max(Math.round(value), 1), MAX_REPEATS);
+}
 
 /** Keeps a user-supplied temperature inside what OpenAI-compatible servers accept. */
 export function clampTemperature(value: number | undefined): number {
@@ -196,6 +204,8 @@ export function createRun(input: {
   title?: string;
   /** Sampling temperature for every request; defaults to 0 for reproducibility. */
   temperature?: number;
+  /** Samples per task per model; more samples narrow the confidence interval. */
+  repeats?: number;
 }): BenchmarkRun {
   const models = [...new Set(input.models.map((m) => m.trim()).filter(Boolean))].slice(
     0,
@@ -216,6 +226,7 @@ export function createRun(input: {
       status: "pending",
       costPerHour: rate > 0 ? rate : null,
       temperature: clampTemperature(input.temperature),
+      repeats: clampRepeats(input.repeats),
     })
     .returning()
     .get();
@@ -261,6 +272,7 @@ interface ResultInput {
   runId: string;
   model: string;
   taskIndex: number;
+  repeatIndex: number;
   output: string;
   score: number;
   passed: boolean;
@@ -595,6 +607,7 @@ export async function executeRun(runId: string): Promise<void> {
       }
 
       for (let i = 0; i < tasks.length; i++) {
+        for (let rep = 0; rep < run.repeats; rep++) {
         const current = getRun(runId);
         if (!current || current.status === "cancelled") return;
 
@@ -603,6 +616,7 @@ export async function executeRun(runId: string): Promise<void> {
             runId,
             model: modelName,
             taskIndex: i,
+            repeatIndex: rep,
             output: "",
             score: 0,
             passed: false,
@@ -630,6 +644,7 @@ export async function executeRun(runId: string): Promise<void> {
             runId,
             model: modelName,
             taskIndex: i,
+            repeatIndex: rep,
             output: metrics.output,
             score: scored.score,
             passed: scored.passed,
@@ -650,12 +665,14 @@ export async function executeRun(runId: string): Promise<void> {
             runId,
             model: modelName,
             taskIndex: i,
+            repeatIndex: rep,
             output: "",
             score: 0,
             passed: false,
             latencyMs: Date.now() - startedAt,
             error: err instanceof Error ? err.message : "Request failed.",
           });
+        }
         }
       }
     }
@@ -740,24 +757,42 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
   const labels = modelLabels(models);
   const available = availableProviders(getSettings());
   const coldStarts = loadColdStarts(run);
-  const byKey = new Map(results.map((r) => [`${r.model} ${r.taskIndex}`, r]));
+  // A cell can now hold several samples, so group rather than overwrite.
+  const byKey = new Map<string, BenchmarkResult[]>();
+  for (const r of results) {
+    const key = `${r.model} ${r.taskIndex}`;
+    const bucket = byKey.get(key);
+    if (bucket) bucket.push(r);
+    else byKey.set(key, [r]);
+  }
   const cell = (model: string, taskIndex: number): TaskCellView | null => {
-    const r = byKey.get(`${model} ${taskIndex}`);
-    if (!r) return null;
+    const rows = byKey.get(`${model} ${taskIndex}`);
+    if (!rows || rows.length === 0) return null;
+    const sorted = [...rows].sort((a, b) => a.repeatIndex - b.repeatIndex);
+    const r = sorted[0];
+    const passCount = sorted.filter((x) => x.passed).length;
+    const avg = (pick: (x: BenchmarkResult) => number | null): number | null => {
+      const vals = sorted.map(pick).filter((v): v is number => v !== null);
+      return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    };
     return {
       output: r.output,
-      score: r.score,
-      passed: r.passed,
-      latencyMs: r.latencyMs,
-      ttftMs: r.ttftMs,
-      tokensPerSecond: r.tokensPerSecond,
-      prefillTokensPerSecond: r.prefillTokensPerSecond,
+      score: sorted.reduce((sum, x) => sum + x.score, 0) / sorted.length,
+      // With repeats the glyph reflects the majority; the exact split is shown
+      // alongside it, so a 3/5 never masquerades as a clean pass.
+      passed: passCount * 2 > sorted.length,
+      samples: sorted.length,
+      passCount,
+      latencyMs: avg((x) => x.latencyMs) ?? r.latencyMs,
+      ttftMs: avg((x) => x.ttftMs),
+      tokensPerSecond: avg((x) => x.tokensPerSecond),
+      prefillTokensPerSecond: avg((x) => x.prefillTokensPerSecond),
       phases: rowPhases(r),
-      interTokenP50Ms: r.interTokenP50Ms,
-      interTokenP95Ms: r.interTokenP95Ms,
+      interTokenP50Ms: avg((x) => x.interTokenP50Ms),
+      interTokenP95Ms: avg((x) => x.interTokenP95Ms),
       promptTokens: r.promptTokens,
       outputTokens: r.outputTokens,
-      error: r.error,
+      error: sorted.find((x) => x.error !== null)?.error ?? null,
     };
   };
 
@@ -786,6 +821,10 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
       label: labels[mi],
       score: mean(scored.map((r) => r.score)) ?? 0,
       passed: scored.filter((r) => r.passed).length,
+      // Over every scored *sample*, not every task — repeats are what make the
+      // interval narrow enough to read a ranking from.
+      accuracy: wilson(scored.filter((r) => r.passed).length, scored.length),
+      repeats: run.repeats,
       scoredCompleted: scored.length,
       completed: rows.length,
       errors: rows.filter((r) => r.error !== null).length,
@@ -828,7 +867,7 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
     categories,
     tasks: taskRows,
     completed: results.length,
-    total: models.length * tasks.length,
+    total: models.length * tasks.length * Math.max(run.repeats, 1),
   };
 }
 

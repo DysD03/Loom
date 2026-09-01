@@ -467,6 +467,12 @@ export const benchmarkRuns = sqliteTable("benchmark_runs", {
    * timing averages, but surfaced because cold start is itself worth knowing.
    */
   coldStarts: text("cold_starts").notNull().default("{}"),
+  /**
+   * How many times each task is run per model. More samples narrow the
+   * confidence interval on accuracy; 1 means a single sample and no interval
+   * worth quoting.
+   */
+  repeats: integer("repeats").notNull().default(1),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -488,6 +494,8 @@ export const benchmarkResults = sqliteTable(
       .references(() => benchmarkRuns.id, { onDelete: "cascade" }),
     model: text("model").notNull(),
     taskIndex: integer("task_index").notNull(),
+    /** Which sample of this cell this row is, 0-based. */
+    repeatIndex: integer("repeat_index").notNull().default(0),
     output: text("output").notNull().default(""),
     /** 0..1 (binary for deterministic scorers, graded for the judge). */
     score: real("score").notNull().default(0),

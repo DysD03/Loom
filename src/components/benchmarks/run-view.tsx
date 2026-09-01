@@ -21,6 +21,7 @@ import { PerformancePanel } from "./performance";
 import type { BenchmarkRunStatus } from "@/db/schema";
 import {
   isTimingOnly,
+  separable,
   type RunSummaryView,
   type TaskCellView,
   type TaskRowView,
@@ -107,6 +108,25 @@ function CellMark({ cell, scoring }: { cell: TaskCellView | null; scoring: strin
       </span>
     );
   }
+  // With repeats, the split is the honest reading — a 3/5 is not a pass.
+  if (cell.samples > 1) {
+    return (
+      <span
+        className={cn(
+          "text-xs",
+          cell.passCount === cell.samples
+            ? "text-neon-green"
+            : cell.passCount === 0
+              ? "text-destructive"
+              : "text-neon-yellow",
+        )}
+        style={{ fontVariantNumeric: "tabular-nums" }}
+        title={`${cell.passCount} of ${cell.samples} samples passed`}
+      >
+        {cell.passCount}/{cell.samples}
+      </span>
+    );
+  }
   return cell.passed ? (
     <Check className="text-neon-green mx-auto size-3.5" aria-label="Passed" />
   ) : (
@@ -146,6 +166,7 @@ export function RunView({
     .map((m, i) => ({ ...m, color: modelColors[i] }))
     .sort((a, b) => b.score - a.score);
   const progress = summary.total > 0 ? summary.completed / summary.total : 0;
+  const leaderInterval = leaderboard[0]?.accuracy ?? null;
   const hasScored = summary.models.some((m) => m.scoredCompleted > 0);
 
   const wallClockMs =
@@ -273,6 +294,15 @@ export function RunView({
                       <span className="text-muted-foreground w-5 text-sm" style={{ fontVariantNumeric: "tabular-nums" }}>
                         {rank + 1}
                       </span>
+                      {rank > 0 && leaderInterval && entry.accuracy && entry.repeats > 1 &&
+                      !separable(leaderInterval, entry.accuracy) ? (
+                        <span
+                          className="bg-muted text-muted-foreground shrink-0 rounded px-1.5 py-0.5 text-[10px]"
+                          title="This model's confidence interval overlaps the leader's — the gap is not statistically separable"
+                        >
+                          tied
+                        </span>
+                      ) : null}
                       {rank === 0 && run.status === "done" ? (
                         <Trophy className="text-neon-yellow size-4 shrink-0" />
                       ) : (
@@ -296,6 +326,15 @@ export function RunView({
                         <p className="w-14 text-lg font-semibold tracking-tight">
                           {entry.scoredCompleted > 0 ? `${Math.round(entry.score * 100)}%` : "—"}
                         </p>
+                        {entry.accuracy && entry.repeats > 1 ? (
+                          <p
+                            className="text-muted-foreground hidden w-20 text-xs xl:block"
+                            title={`95% confidence interval over ${entry.accuracy.trials} samples`}
+                          >
+                            {Math.round(entry.accuracy.low * 100)}–
+                            {Math.round(entry.accuracy.high * 100)}%
+                          </p>
+                        ) : null}
                         <p className="text-muted-foreground hidden w-16 text-xs sm:block">
                           {entry.scoredCompleted > 0
                             ? `${entry.passed}/${entry.scoredCompleted} passed`
