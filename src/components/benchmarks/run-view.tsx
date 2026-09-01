@@ -2,7 +2,19 @@
 
 import { Fragment, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowDown, ArrowUp, Ban, Check, CircleAlert, Loader2, Trophy, X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Ban,
+  Check,
+  CircleAlert,
+  Loader2,
+  Pin,
+  PinOff,
+  Play,
+  Trophy,
+  X,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -23,11 +35,17 @@ import type { BenchmarkRunStatus } from "@/db/schema";
 import {
   isTimingOnly,
   separable,
+  type BaselineComparison,
+  type ConcurrencyReport,
   type RunSummaryView,
   type TaskCellView,
   type TaskRowView,
 } from "@/lib/benchmark-score";
-import { cancelRunAction } from "@/app/benchmarks/actions";
+import {
+  cancelRunAction,
+  resumeRunAction,
+  setBaselineAction,
+} from "@/app/benchmarks/actions";
 
 export interface RunViewData {
   id: string;
@@ -39,6 +57,10 @@ export interface RunViewData {
   finishedAt: string | null;
   /** Sampling temperature this run used; 0 means greedy and reproducible. */
   temperature: number;
+  /** Sweep steps; more than one means each model was run once per temperature. */
+  temperatures: number[];
+  /** Whether this run is the pinned comparison baseline. */
+  isBaseline: boolean;
 }
 
 export interface RunCostInfo {
@@ -85,6 +107,38 @@ function ChartCard({
       </div>
       {children}
     </div>
+  );
+}
+
+/**
+ * Movement against the pinned baseline. Coloured by direction rather than by
+ * model, because the only question it answers is "better or worse than before".
+ */
+function Delta({
+  value,
+  unit,
+  lowerIsBetter = false,
+  title,
+}: {
+  value: number | null;
+  unit: string;
+  lowerIsBetter?: boolean;
+  title: string;
+}) {
+  if (value === null || Math.abs(value) < 0.05) {
+    return <span className="text-muted-foreground/60 text-[11px]">±0</span>;
+  }
+  const better = lowerIsBetter ? value < 0 : value > 0;
+  const shown = unit === "pts" ? value.toFixed(1) : Math.round(value).toString();
+  return (
+    <span
+      className={cn("text-[11px]", better ? "text-neon-green" : "text-neon-pink")}
+      title={title}
+      style={{ fontVariantNumeric: "tabular-nums" }}
+    >
+      {value > 0 ? "+" : ""}
+      {shown} {unit}
+    </span>
   );
 }
 
@@ -140,11 +194,16 @@ export function RunView({
   summary,
   cost,
   pricing,
+  baseline,
+  concurrency,
 }: {
   run: RunViewData;
   summary: RunSummaryView;
   cost: RunCostInfo | null;
   pricing: TokenPrice[];
+  /** Deltas against the pinned run; null when nothing comparable is pinned. */
+  baseline: BaselineComparison | null;
+  concurrency: ConcurrencyReport;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -154,6 +213,8 @@ export function RunView({
   const [taskSort, setTaskSort] = useState<TaskSort>(null);
 
   const live = run.status === "running" || run.status === "pending";
+  const resumable = run.status === "cancelled" || run.status === "error";
+  const sweeping = run.temperatures.length > 1;
   useEffect(() => {
     if (!live) return;
     const timer = setInterval(() => router.refresh(), 2_500);
@@ -223,6 +284,20 @@ export function RunView({
     });
   }
 
+  function resume() {
+    startTransition(async () => {
+      await resumeRunAction(run.id);
+      router.refresh();
+    });
+  }
+
+  function toggleBaseline() {
+    startTransition(async () => {
+      await setBaselineAction(run.isBaseline ? null : run.id);
+      router.refresh();
+    });
+  }
+
   return (
     <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex h-12 shrink-0 items-center gap-3 border-b px-4">
@@ -231,18 +306,57 @@ export function RunView({
         <span
           className="text-muted-foreground hidden text-xs md:inline"
           title={
-            run.temperature === 0
-              ? "Greedy decoding — re-running this suite should reproduce these answers"
-              : "Sampling is on, so accuracy will vary between runs"
+            sweeping
+              ? "Each model was run once per temperature and appears as one variant per step"
+              : run.temperature === 0
+                ? "Greedy decoding — re-running this suite should reproduce these answers"
+                : "Sampling is on, so accuracy will vary between runs"
           }
         >
-          temp {run.temperature}
+          {sweeping ? `temp ${run.temperatures.join(" · ")}` : `temp ${run.temperature}`}
         </span>
         <Badge className={badge.className}>{badge.label}</Badge>
         {live ? (
-          <Button variant="outline" size="sm" onClick={cancel} disabled={isPending} className="gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={cancel}
+            disabled={isPending}
+            className="gap-1.5"
+          >
             <Ban className="size-3.5" />
             Cancel
+          </Button>
+        ) : null}
+        {resumable ? (
+          <Button
+            size="sm"
+            onClick={resume}
+            disabled={isPending}
+            className="gap-1.5"
+            title="Runs only the cells that never finished"
+          >
+            <Play className="size-3.5" />
+            Resume
+          </Button>
+        ) : null}
+        {summary.completed > 0 && !live ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={toggleBaseline}
+            disabled={isPending}
+            className="gap-1.5"
+            title={
+              run.isBaseline
+                ? "Stop comparing other runs against this one"
+                : "Compare later runs of this suite against this one"
+            }
+          >
+            {run.isBaseline ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+            <span className="hidden sm:inline">
+              {run.isBaseline ? "Unpin baseline" : "Pin as baseline"}
+            </span>
           </Button>
         ) : null}
       </header>
@@ -282,6 +396,11 @@ export function RunView({
                 <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
                   <span className="bg-neon-cyan mr-2 inline-block h-2.5 w-0.5 align-[-1px]" />
                   Leaderboard
+                  {baseline ? (
+                    <span className="text-muted-foreground/70 ml-2 normal-case">
+                      (deltas vs pinned baseline “{baseline.title}”)
+                    </span>
+                  ) : null}
                 </h2>
                 <ol className="space-y-1.5">
                   {leaderboard.map((entry, rank) => (
@@ -356,6 +475,23 @@ export function RunView({
                             ? `${entry.avgTokensPerSecond.toFixed(1)} tok/s`
                             : "—"}
                         </p>
+                        {baseline ? (
+                          <div className="flex w-20 flex-col items-end gap-0.5">
+                            <Delta
+                              value={baseline.models[entry.model]?.scoreDelta ?? null}
+                              unit="pts"
+                              title={`Accuracy against the baseline's ${baseline.models[
+                                entry.model
+                              ]?.baselineScore.toFixed(0)}%`}
+                            />
+                            <Delta
+                              value={baseline.models[entry.model]?.latencyDeltaMs ?? null}
+                              unit="ms"
+                              lowerIsBetter
+                              title="Average response time against the baseline"
+                            />
+                          </div>
+                        ) : null}
                       </div>
                     </li>
                   ))}
@@ -406,7 +542,11 @@ export function RunView({
                 </section>
               ) : null}
 
-              <PerformancePanel summary={summary} colors={modelColors} />
+              <PerformancePanel
+                summary={summary}
+                colors={modelColors}
+                concurrency={concurrency}
+              />
 
               <AnalysisPanel runId={run.id} summary={summary} colors={modelColors} />
 

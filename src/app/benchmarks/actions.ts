@@ -7,7 +7,10 @@ import {
   createSuite,
   deleteRun,
   deleteSuite,
+  pinBaselineRun,
   renameRun,
+  resumeRun,
+  unpinBaselineRun,
   updateSuite,
 } from "@/lib/benchmarks";
 import { SCORING_KINDS, type BenchTask, type ScoringKind } from "@/lib/benchmark-score";
@@ -103,6 +106,20 @@ export async function deleteSuiteAction(id: string): Promise<void> {
 
 export async function cancelRunAction(id: string): Promise<void> {
   cancelRun(id);
+  revalidatePath("/benchmarks");
+}
+
+/** Restarts a cancelled or failed run, skipping the cells it already finished. */
+export async function resumeRunAction(id: string): Promise<{ ok: boolean }> {
+  const ok = resumeRun(id);
+  revalidatePath("/benchmarks");
+  return { ok };
+}
+
+/** Pins this run as the comparison baseline, or clears the pin when id is null. */
+export async function setBaselineAction(id: string | null): Promise<void> {
+  if (id) pinBaselineRun(id);
+  else unpinBaselineRun();
   revalidatePath("/benchmarks");
 }
 

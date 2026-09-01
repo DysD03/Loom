@@ -3,6 +3,7 @@ import {
   listResults,
   loadModels,
   loadTasks,
+  loadTemperatures,
   MAX_OUTPUT_TOKENS,
 } from "@/lib/benchmarks";
 import {
@@ -38,6 +39,7 @@ export async function GET(
       suiteName: run.suiteName,
       status: run.status,
       temperature: run.temperature,
+      temperatures: loadTemperatures(run),
       repeats: run.repeats,
       models: loadModels(run),
       startedAt: run.startedAt,

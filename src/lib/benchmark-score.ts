@@ -182,9 +182,15 @@ export type LatencyPhases = Record<PhaseKey, number>;
 // --- shared view types for run summaries (computed server-side) ---
 
 export interface ModelSummary {
+  /**
+   * Variant identity: the model id, suffixed with the temperature when the run
+   * sweeps several. Unique within a run, and what every view keys off.
+   */
   model: string;
   /** Which endpoint served this model — decides how its cost is billed. */
   provider: ProviderKind;
+  /** Sampling temperature this variant ran at. */
+  temperature: number;
   /** Unique display name (id without redundant path segments). */
   label: string;
   /** Mean score over completed scored (non-timing) tasks, 0..1. */
@@ -272,6 +278,50 @@ export interface RunSummaryView {
   tasks: TaskRowView[];
   completed: number;
   total: number;
+}
+
+// --- concurrency probe ---
+
+/** How a model held up with N identical requests in flight at once. */
+export interface ConcurrencyPoint {
+  /** Requests in flight. */
+  level: number;
+  /** Wall clock for the whole batch. */
+  wallMs: number;
+  /** Mean per-request response time at this level. */
+  latencyMs: number;
+  /** Batch output tokens ÷ batch wall clock — the server's aggregate throughput. */
+  tokensPerSecond: number | null;
+  errors: number;
+}
+
+export interface ConcurrencyReport {
+  /** Whether this run asked for a probe at all. */
+  requested: boolean;
+  /** Keyed by model id, not variant — the probe measures the server, not sampling. */
+  models: Record<string, ConcurrencyPoint[]>;
+}
+
+// --- baseline comparison ---
+
+/** How one variant moved against the same variant in the pinned run. */
+export interface BaselineDelta {
+  /** The baseline's accuracy, in %. */
+  baselineScore: number;
+  /** Percentage points gained (or lost) since the baseline. */
+  scoreDelta: number | null;
+  /** Milliseconds added to the average response time; negative is faster. */
+  latencyDeltaMs: number | null;
+  /** Tokens/sec gained; negative is slower. */
+  throughputDelta: number | null;
+}
+
+export interface BaselineComparison {
+  runId: string;
+  title: string;
+  createdAt: string;
+  /** Keyed by variant, so a sweep compares each temperature to its own past. */
+  models: Record<string, BaselineDelta>;
 }
 
 // --- verdicts (which model for which task) ---

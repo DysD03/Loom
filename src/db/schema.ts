@@ -36,6 +36,12 @@ export const appSettings = sqliteTable("app_settings", {
    * prices change too often to hardcode, so the user supplies them.
    */
   tokenPricing: text("token_pricing").notNull().default("[]"),
+  /**
+   * Benchmark run pinned as the comparison baseline. Other runs of the same
+   * suite show deltas against it, which is what turns a wall of numbers into
+   * "better or worse than what we had". Empty = nothing pinned.
+   */
+  baselineRunId: text("baseline_run_id").notNull().default(""),
   updatedAt: text("updated_at")
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -473,6 +479,18 @@ export const benchmarkRuns = sqliteTable("benchmark_runs", {
    * worth quoting.
    */
   repeats: integer("repeats").notNull().default(1),
+  /**
+   * JSON-encoded number[] of temperatures to sweep. More than one turns each
+   * model into several compared variants (model @ t=0.7), which is how the
+   * effect of sampling on a suite becomes visible. Empty = just `temperature`.
+   */
+  temperatures: text("temperatures").notNull().default("[]"),
+  /**
+   * JSON map of model → parallel-load probe results. Optional and measured
+   * after the (deliberately serial) task loop, so it never contaminates the
+   * per-task timings it sits beside.
+   */
+  concurrency: text("concurrency").notNull().default("{}"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`(current_timestamp)`),
@@ -496,6 +514,11 @@ export const benchmarkResults = sqliteTable(
     taskIndex: integer("task_index").notNull(),
     /** Which sample of this cell this row is, 0-based. */
     repeatIndex: integer("repeat_index").notNull().default(0),
+    /**
+     * Sampling temperature this sample was taken at. Constant across a normal
+     * run; the axis that separates the variants of a temperature sweep.
+     */
+    temperature: real("temperature").notNull().default(0),
     output: text("output").notNull().default(""),
     /** 0..1 (binary for deterministic scorers, graded for the judge). */
     score: real("score").notNull().default(0),

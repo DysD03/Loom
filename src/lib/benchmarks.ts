@@ -15,7 +15,7 @@ import {
 } from "@/db/schema";
 import { availableProviders, getChatModel, getUtilityModel } from "./provider";
 import { parseModel } from "./models";
-import { getSettings } from "./settings";
+import { getSettings, setBaselineRun } from "./settings";
 import { costOfMs } from "./benchmark-cost";
 import {
   classifyFailure,
@@ -26,7 +26,11 @@ import {
   scoreDeterministic,
   wilson,
   type BenchTask,
+  type BaselineComparison,
+  type BaselineDelta,
   type CategorySummary,
+  type ConcurrencyPoint,
+  type ConcurrencyReport,
   type FailureKind,
   type HistoryEntry,
   type LatencyPhases,
@@ -40,6 +44,7 @@ import { BUILTIN_SUITES } from "./benchmark-suites";
 export const MAX_MODELS_PER_RUN = 5;
 export const MAX_TEMPERATURE = 2;
 export const MAX_REPEATS = 10;
+export const MAX_TEMPERATURE_STEPS = 5;
 
 /** Samples per task, bounded so a stray value cannot turn one run into thousands. */
 export function clampRepeats(value: number | undefined): number {
@@ -51,6 +56,17 @@ export function clampRepeats(value: number | undefined): number {
 export function clampTemperature(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return 0;
   return Math.min(Math.max(value, 0), MAX_TEMPERATURE);
+}
+
+/**
+ * A sweep's temperature steps: deduplicated, sorted and bounded. Fewer than two
+ * distinct values is not a sweep, so it returns [] and the run uses its single
+ * `temperature` — that keeps every existing run and view on the simple path.
+ */
+export function clampTemperatures(values: number[] | undefined): number[] {
+  if (!Array.isArray(values)) return [];
+  const steps = [...new Set(values.map(clampTemperature))].sort((a, b) => a - b);
+  return steps.length > 1 ? steps.slice(0, MAX_TEMPERATURE_STEPS) : [];
 }
 /**
  * Generous enough that a slow local model working through a hard task is
@@ -194,6 +210,19 @@ export function loadColdStarts(run: BenchmarkRun): Record<string, ColdStart> {
   }
 }
 
+export function loadConcurrency(run: BenchmarkRun): ConcurrencyReport {
+  try {
+    const parsed = JSON.parse(run.concurrency) as Partial<ConcurrencyReport> | null;
+    if (!parsed || typeof parsed !== "object") return { requested: false, models: {} };
+    return {
+      requested: Boolean(parsed.requested),
+      models: parsed.models && typeof parsed.models === "object" ? parsed.models : {},
+    };
+  } catch {
+    return { requested: false, models: {} };
+  }
+}
+
 export function loadModels(run: BenchmarkRun): string[] {
   try {
     const parsed = JSON.parse(run.models) as unknown;
@@ -201,6 +230,59 @@ export function loadModels(run: BenchmarkRun): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * A run's temperature steps. One value (or none) means no sweep, and the whole
+ * run collapses back to a plain model comparison.
+ */
+export function loadTemperatures(run: BenchmarkRun): number[] {
+  try {
+    const parsed = JSON.parse(run.temperatures) as unknown;
+    const steps = Array.isArray(parsed)
+      ? parsed.filter((t): t is number => typeof t === "number" && Number.isFinite(t))
+      : [];
+    return steps.length > 1 ? steps : [run.temperature];
+  } catch {
+    return [run.temperature];
+  }
+}
+
+/** One model at one temperature — the unit a run actually compares. */
+export interface RunVariant {
+  /** Stable identity for grouping results, summaries and history. */
+  key: string;
+  model: string;
+  temperature: number;
+  /** Display name; carries the temperature only when the run sweeps. */
+  label: string;
+}
+
+/** Formats a step for a label: 0 → "0", 0.7 → "0.7". */
+const stepLabel = (value: number) => String(Number(value.toFixed(2)));
+
+/**
+ * Results are stored against a model and a temperature, so the key is derived
+ * rather than persisted — old runs keep working, and a run that does not sweep
+ * keys by the bare model id exactly as it always did.
+ */
+export function variantKey(model: string, temperature: number, sweeping: boolean): string {
+  return sweeping ? `${model}@t=${stepLabel(temperature)}` : model;
+}
+
+export function runVariants(run: BenchmarkRun): RunVariant[] {
+  const models = loadModels(run);
+  const steps = loadTemperatures(run);
+  const labels = modelLabels(models);
+  const sweeping = steps.length > 1;
+  return models.flatMap((model, mi) =>
+    steps.map((temperature) => ({
+      key: variantKey(model, temperature, sweeping),
+      model,
+      temperature,
+      label: sweeping ? `${labels[mi]} @ t${stepLabel(temperature)}` : labels[mi],
+    })),
+  );
 }
 
 export function createRun(input: {
@@ -211,6 +293,10 @@ export function createRun(input: {
   temperature?: number;
   /** Samples per task per model; more samples narrow the confidence interval. */
   repeats?: number;
+  /** Two or more temperatures turn each model into that many compared variants. */
+  temperatures?: number[];
+  /** Measure how throughput holds up under parallel requests after the task loop. */
+  probeConcurrency?: boolean;
 }): BenchmarkRun {
   const models = [...new Set(input.models.map((m) => m.trim()).filter(Boolean))].slice(
     0,
@@ -232,6 +318,12 @@ export function createRun(input: {
       costPerHour: rate > 0 ? rate : null,
       temperature: clampTemperature(input.temperature),
       repeats: clampRepeats(input.repeats),
+      temperatures: JSON.stringify(clampTemperatures(input.temperatures)),
+      // Recorded up front so the executor knows whether to probe at all.
+      concurrency: JSON.stringify({
+        requested: Boolean(input.probeConcurrency),
+        models: {},
+      } satisfies ConcurrencyReport),
     })
     .returning()
     .get();
@@ -242,7 +334,13 @@ function updateRun(
   set: Partial<
     Pick<
       BenchmarkRun,
-      "status" | "error" | "title" | "startedAt" | "finishedAt" | "coldStarts"
+      | "status"
+      | "error"
+      | "title"
+      | "startedAt"
+      | "finishedAt"
+      | "coldStarts"
+      | "concurrency"
     >
   >,
 ): void {
@@ -276,6 +374,8 @@ export function listResults(runId: string): BenchmarkResult[] {
 interface ResultInput {
   runId: string;
   model: string;
+  /** Temperature this sample was taken at — the sweep axis. */
+  temperature: number;
   taskIndex: number;
   repeatIndex: number;
   output: string;
@@ -565,32 +665,101 @@ async function warmUp(
   }
 }
 
+/** Fixed generation used for the load probe — long enough to measure, short enough to repeat. */
+const PROBE_TASK: BenchTask = {
+  name: "concurrency probe",
+  category: "probe",
+  prompt: "Count from 1 to 40, separated by commas. Output only the numbers.",
+  scoring: "timing",
+};
+
+/** Requests in flight per step. Doubling is enough to show the shape of the curve. */
+const CONCURRENCY_LEVELS = [1, 2, 4];
+
 /**
- * Runs every model × task combination sequentially (one request at a time, so
+ * Measures how a server holds up with several requests in flight.
+ *
+ * The task loop is deliberately serial so per-task timings stay uncontended,
+ * which means it can never answer "can this model serve two chats at once".
+ * This runs after that loop, on its own fixed prompt, so the two measurements
+ * never contaminate each other. A local server pinned to one model usually
+ * queues rather than parallelises — the flat aggregate throughput that produces
+ * is the finding, not a failure.
+ */
+async function probeConcurrency(factory: ModelFactory, temperature: number) {
+  const points: ConcurrencyPoint[] = [];
+  for (const level of CONCURRENCY_LEVELS) {
+    const startedAt = Date.now();
+    const settled = await Promise.allSettled(
+      Array.from({ length: level }, () => streamTask(factory, PROBE_TASK, temperature)),
+    );
+    const wallMs = Date.now() - startedAt;
+    const ok = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    if (ok.length === 0) {
+      points.push({ level, wallMs, latencyMs: 0, tokensPerSecond: null, errors: level });
+      // Nothing completed at this level; a wider one will not fare better.
+      break;
+    }
+    const tokens = ok.reduce((sum, m) => sum + (m.outputTokens ?? 0), 0);
+    points.push({
+      level,
+      wallMs,
+      latencyMs: ok.reduce((sum, m) => sum + m.latencyMs, 0) / ok.length,
+      tokensPerSecond: tokens > 0 && wallMs > 0 ? (tokens / wallMs) * 1000 : null,
+      errors: level - ok.length,
+    });
+  }
+  return points;
+}
+
+/**
+ * Runs every variant × task × repeat sequentially (one request at a time, so
  * latency and tokens/sec stay uncontended — important for local servers that
  * serve a single model). Results are written to the DB as they complete; the
- * UI polls. Checks for cancellation between tasks.
+ * UI polls. Checks for cancellation between cells, and skips cells that already
+ * have a result so a cancelled run can be resumed where it stopped.
  */
 export async function executeRun(runId: string): Promise<void> {
   const run = getRun(runId);
   if (!run || run.status !== "pending") return;
   const tasks = loadTasks(run);
   const models = loadModels(run);
+  const steps = loadTemperatures(run);
   if (tasks.length === 0 || models.length === 0) {
     updateRun(runId, { status: "error", error: "The run has no tasks or no models." });
     return;
   }
 
+  // Resuming: anything already recorded is left alone, so a run cancelled
+  // halfway costs nothing to restart.
+  const cellKey = (model: string, temperature: number, taskIndex: number, rep: number) =>
+    `${model}|${temperature}|${taskIndex}|${rep}`;
+  const finished = new Set(
+    listResults(runId).map((r) => cellKey(r.model, r.temperature, r.taskIndex, r.repeatIndex)),
+  );
+
   updateRun(runId, {
     status: "running",
     error: null,
-    startedAt: new Date().toISOString(),
+    // A resumed run keeps its original start so the cost estimate still spans
+    // the whole thing.
+    startedAt: run.startedAt ?? new Date().toISOString(),
   });
 
-  const coldStarts: Record<string, ColdStart> = {};
+  const coldStarts: Record<string, ColdStart> = loadColdStarts(run);
+  const concurrency = loadConcurrency(run);
 
   try {
     for (const modelName of models) {
+      const pending = steps.some((temperature) =>
+        tasks.some((_, i) =>
+          Array.from({ length: run.repeats }, (_, rep) => rep).some(
+            (rep) => !finished.has(cellKey(modelName, temperature, i, rep)),
+          ),
+        ),
+      );
+      if (!pending && !(concurrency.requested && !concurrency.models[modelName])) continue;
+
       // Resolve once to surface configuration errors, then rebuild per turn so
       // every request carries its own timing probe.
       let built: { factory: ModelFactory } | { error: string };
@@ -603,82 +772,99 @@ export async function executeRun(runId: string): Promise<void> {
         built = { error: err instanceof Error ? err.message : "Failed to build the model." };
       }
 
-      if (!("error" in built)) {
-        const cold = await warmUp(built.factory, run.temperature);
+      // One warmup per model, before anything is timed — and not again on a
+      // resume that already captured it.
+      if (!("error" in built) && pending && coldStarts[modelName] === undefined) {
+        const cold = await warmUp(built.factory, steps[0]);
         if (cold) {
           coldStarts[modelName] = cold;
           updateRun(runId, { coldStarts: JSON.stringify(coldStarts) });
         }
       }
 
-      for (let i = 0; i < tasks.length; i++) {
-        for (let rep = 0; rep < run.repeats; rep++) {
+      for (const temperature of steps) {
+        for (let i = 0; i < tasks.length; i++) {
+          for (let rep = 0; rep < run.repeats; rep++) {
+            if (finished.has(cellKey(modelName, temperature, i, rep))) continue;
+
+            const current = getRun(runId);
+            if (!current || current.status === "cancelled") return;
+
+            if ("error" in built) {
+              insertResult({
+                runId,
+                model: modelName,
+                temperature,
+                taskIndex: i,
+                repeatIndex: rep,
+                output: "",
+                score: 0,
+                passed: false,
+                latencyMs: 0,
+                error: built.error,
+              });
+              continue;
+            }
+
+            const task = tasks[i];
+            const startedAt = Date.now();
+            try {
+              const metrics = await streamTask(built.factory, task, temperature);
+              const scored =
+                task.scoring === "judge"
+                  ? await judgeOutput(task, metrics.finalText).catch(
+                      (err): TaskScore => ({
+                        score: 0,
+                        passed: false,
+                        error: `Judge failed: ${err instanceof Error ? err.message : String(err)}`,
+                      }),
+                    )
+                  : scoreDeterministic(task, metrics.finalText);
+              insertResult({
+                runId,
+                model: modelName,
+                temperature,
+                taskIndex: i,
+                repeatIndex: rep,
+                output: metrics.output,
+                score: scored.score,
+                passed: scored.passed,
+                latencyMs: metrics.latencyMs,
+                ttftMs: metrics.ttftMs,
+                phases: metrics.phases,
+                interTokenP50Ms: metrics.interTokenP50Ms,
+                interTokenP95Ms: metrics.interTokenP95Ms,
+                streamChunks: metrics.streamChunks,
+                outputTokens: metrics.outputTokens,
+                promptTokens: metrics.promptTokens,
+                tokensPerSecond: metrics.tokensPerSecond,
+                prefillTokensPerSecond: metrics.prefillTokensPerSecond,
+                error: scored.error ?? null,
+              });
+            } catch (err) {
+              insertResult({
+                runId,
+                model: modelName,
+                temperature,
+                taskIndex: i,
+                repeatIndex: rep,
+                output: "",
+                score: 0,
+                passed: false,
+                latencyMs: Date.now() - startedAt,
+                error: err instanceof Error ? err.message : "Request failed.",
+              });
+            }
+          }
+        }
+      }
+
+      // Last, so the contended requests cannot land inside a timed task.
+      if (concurrency.requested && !("error" in built) && !concurrency.models[modelName]) {
         const current = getRun(runId);
         if (!current || current.status === "cancelled") return;
-
-        if ("error" in built) {
-          insertResult({
-            runId,
-            model: modelName,
-            taskIndex: i,
-            repeatIndex: rep,
-            output: "",
-            score: 0,
-            passed: false,
-            latencyMs: 0,
-            error: built.error,
-          });
-          continue;
-        }
-
-        const task = tasks[i];
-        const startedAt = Date.now();
-        try {
-          const metrics = await streamTask(built.factory, task, run.temperature);
-          const scored =
-            task.scoring === "judge"
-              ? await judgeOutput(task, metrics.finalText).catch(
-                  (err): TaskScore => ({
-                    score: 0,
-                    passed: false,
-                    error: `Judge failed: ${err instanceof Error ? err.message : String(err)}`,
-                  }),
-                )
-              : scoreDeterministic(task, metrics.finalText);
-          insertResult({
-            runId,
-            model: modelName,
-            taskIndex: i,
-            repeatIndex: rep,
-            output: metrics.output,
-            score: scored.score,
-            passed: scored.passed,
-            latencyMs: metrics.latencyMs,
-            ttftMs: metrics.ttftMs,
-            phases: metrics.phases,
-            interTokenP50Ms: metrics.interTokenP50Ms,
-            interTokenP95Ms: metrics.interTokenP95Ms,
-            streamChunks: metrics.streamChunks,
-            outputTokens: metrics.outputTokens,
-            promptTokens: metrics.promptTokens,
-            tokensPerSecond: metrics.tokensPerSecond,
-            prefillTokensPerSecond: metrics.prefillTokensPerSecond,
-            error: scored.error ?? null,
-          });
-        } catch (err) {
-          insertResult({
-            runId,
-            model: modelName,
-            taskIndex: i,
-            repeatIndex: rep,
-            output: "",
-            score: 0,
-            passed: false,
-            latencyMs: Date.now() - startedAt,
-            error: err instanceof Error ? err.message : "Request failed.",
-          });
-        }
-        }
+        concurrency.models[modelName] = await probeConcurrency(built.factory, steps[0]);
+        updateRun(runId, { concurrency: JSON.stringify(concurrency) });
       }
     }
 
@@ -693,6 +879,81 @@ export async function executeRun(runId: string): Promise<void> {
       finishedAt: new Date().toISOString(),
     });
   }
+}
+
+/**
+ * Puts a cancelled or failed run back in the queue. `executeRun` skips cells
+ * that already have a result, so this picks up where it stopped instead of
+ * paying for the whole suite again.
+ */
+export function resumeRun(id: string): boolean {
+  const run = getRun(id);
+  if (!run || (run.status !== "cancelled" && run.status !== "error")) return false;
+  updateRun(id, { status: "pending", error: null, finishedAt: null });
+  void executeRun(id).catch(() => {
+    // executeRun records its own failures against the run.
+  });
+  return true;
+}
+
+// --- baseline ---
+
+/**
+ * The pinned run, if one is set and still exists. A single pin rather than a
+ * per-run choice: the question it answers ("is this better than what we had?")
+ * only has one useful answer at a time.
+ */
+export function getBaselineRun(): BenchmarkRun | undefined {
+  const id = getSettings().baselineRunId;
+  return id ? getRun(id) : undefined;
+}
+
+export function pinBaselineRun(id: string): void {
+  setBaselineRun(getRun(id) ? id : "");
+}
+
+export function unpinBaselineRun(): void {
+  setBaselineRun("");
+}
+
+/**
+ * How this run's variants moved against the pinned baseline. Only runs of the
+ * same suite are comparable, and only variants present in both — a delta
+ * against a different task set would be worse than no delta at all.
+ */
+export function baselineDeltas(
+  run: BenchmarkRun,
+  summary: RunSummaryView,
+): BaselineComparison | null {
+  const baseline = getBaselineRun();
+  if (!baseline || baseline.id === run.id) return null;
+  const sameSuite = baseline.suiteId
+    ? baseline.suiteId === run.suiteId
+    : baseline.suiteName === run.suiteName;
+  if (!sameSuite) return null;
+
+  const previous = summarizeRun(baseline, listResults(baseline.id));
+  const models: Record<string, BaselineDelta> = {};
+  for (const model of summary.models) {
+    const was = previous.models.find((m) => m.model === model.model);
+    if (!was || was.scoredCompleted === 0) continue;
+    const delta = (now: number | null, before: number | null) =>
+      now !== null && before !== null && before > 0 ? now - before : null;
+    models[model.model] = {
+      baselineScore: was.score * 100,
+      scoreDelta: model.scoredCompleted > 0 ? (model.score - was.score) * 100 : null,
+      latencyDeltaMs: delta(model.avgLatencyMs, was.avgLatencyMs),
+      throughputDelta: delta(model.avgTokensPerSecond, was.avgTokensPerSecond),
+    };
+  }
+  if (Object.keys(models).length === 0) return null;
+
+  return {
+    runId: baseline.id,
+    title: baseline.title,
+    createdAt: baseline.createdAt,
+    models,
+  };
 }
 
 // --- aggregation ---
@@ -757,18 +1018,23 @@ function interTokenSummary(rows: BenchmarkResult[]): { p50: number; p95: number 
 
 /** Builds the full comparison view (leaderboard, categories, task matrix) for a run. */
 export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): RunSummaryView {
-  const models = loadModels(run);
   const tasks = loadTasks(run);
-  const labels = modelLabels(models);
+  const variants = runVariants(run);
+  const sweeping = loadTemperatures(run).length > 1;
   const available = availableProviders(getSettings());
   const coldStarts = loadColdStarts(run);
   // A cell can now hold several samples, so group rather than overwrite.
   const byKey = new Map<string, BenchmarkResult[]>();
+  const byVariant = new Map<string, BenchmarkResult[]>();
   for (const r of results) {
-    const key = `${r.model} ${r.taskIndex}`;
+    const variant = variantKey(r.model, r.temperature, sweeping);
+    const key = `${variant} ${r.taskIndex}`;
     const bucket = byKey.get(key);
     if (bucket) bucket.push(r);
     else byKey.set(key, [r]);
+    const rows = byVariant.get(variant);
+    if (rows) rows.push(r);
+    else byVariant.set(variant, [r]);
   }
   const cell = (task: BenchTask, model: string, taskIndex: number): TaskCellView | null => {
     const rows = byKey.get(`${model} ${taskIndex}`);
@@ -811,11 +1077,11 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
     scoring: task.scoring,
     expected: task.expected,
     prompt: task.prompt,
-    cells: models.map((m) => cell(task, m, index)),
+    cells: variants.map((v) => cell(task, v.key, index)),
   }));
 
-  const modelSummaries: ModelSummary[] = models.map((model, mi) => {
-    const rows = results.filter((r) => r.model === model);
+  const modelSummaries: ModelSummary[] = variants.map((variant) => {
+    const rows = byVariant.get(variant.key) ?? [];
     const scored = rows.filter((r) => {
       const scoring = tasks[r.taskIndex]?.scoring;
       return scoring !== undefined && !isTimingOnly(scoring);
@@ -824,9 +1090,10 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
     const ttft = describe(positives(rows.map((r) => r.ttftMs)));
     const decodeSpeed = describe(positives(rows.map((r) => r.tokensPerSecond)));
     return {
-      model,
-      provider: parseModel(model, available).provider,
-      label: labels[mi],
+      model: variant.key,
+      provider: parseModel(variant.model, available).provider,
+      label: variant.label,
+      temperature: variant.temperature,
       score: mean(scored.map((r) => r.score)) ?? 0,
       passed: scored.filter((r) => r.passed).length,
       // Over every scored *sample*, not every task — repeats are what make the
@@ -849,7 +1116,7 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
       decodeSpeed,
       interToken: interTokenSummary(rows),
       avgTpotMs: tpotMs(rows),
-      coldStartMs: coldStarts[model]?.latencyMs ?? null,
+      coldStartMs: coldStarts[variant.model]?.latencyMs ?? null,
     };
   });
 
@@ -859,7 +1126,7 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
   ];
   const categories: CategorySummary[] = scoredCategories.map((category) => ({
     category,
-    scores: models.map((_, mi) => {
+    scores: variants.map((_, mi) => {
       const scores = taskRows
         .filter((row) => row.category === category && !isTimingOnly(row.scoring))
         .map((row) => row.cells[mi])
@@ -875,7 +1142,7 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
     categories,
     tasks: taskRows,
     completed: results.length,
-    total: models.length * tasks.length * Math.max(run.repeats, 1),
+    total: variants.length * tasks.length * Math.max(run.repeats, 1),
   };
 }
 

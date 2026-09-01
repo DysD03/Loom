@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Gauge, Loader2, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +35,22 @@ export interface SuiteView {
   tasks: BenchTask[];
 }
 
+/**
+ * Reads "0, 0.4, 0.8" into sweep steps. Fewer than two distinct values is not a
+ * sweep, so it yields [] and the run falls back to its single temperature.
+ */
+function parseSweep(value: string): number[] {
+  const steps = [
+    ...new Set(
+      value
+        .split(/[,\s]+/)
+        .map((part) => Number(part))
+        .filter((n) => Number.isFinite(n) && n >= 0 && n <= 2),
+    ),
+  ].sort((a, b) => a - b);
+  return steps.length > 1 ? steps.slice(0, 5) : [];
+}
+
 export function BenchmarkCreate({
   suites,
   history,
@@ -47,11 +64,14 @@ export function BenchmarkCreate({
   const [models, setModels] = useState<string[]>([]);
   const [title, setTitle] = useState("");
   const [temperature, setTemperature] = useState("0");
+  const [sweep, setSweep] = useState("");
+  const [probeConcurrency, setProbeConcurrency] = useState(false);
   const [repeats, setRepeats] = useState("1");
   const [starting, setStarting] = useState(false);
   /** null = list, "new" = creating, otherwise the suite id being edited. */
   const [editing, setEditing] = useState<string | null>(null);
 
+  const sweepSteps = parseSweep(sweep);
   const selectedSuite = suites.find((s) => s.id === suiteId);
   const editingSuite = suites.find((s) => s.id === editing && !s.builtin);
 
@@ -68,6 +88,8 @@ export function BenchmarkCreate({
           title: title.trim() || undefined,
           temperature: Number(temperature) || 0,
           repeats: Number(repeats) || 1,
+          temperatures: parseSweep(sweep),
+          probeConcurrency,
         }),
       });
       const data = (await res.json()) as { runId?: string; error?: string };
@@ -123,7 +145,12 @@ export function BenchmarkCreate({
                 disabled={starting}
               >
                 <SelectTrigger className="w-full" aria-label="Benchmark suite">
-                  <SelectValue placeholder="Pick a suite" />
+                  {/* Without a render function the trigger shows the raw suite id. */}
+                  <SelectValue placeholder="Pick a suite">
+                    {(value: string) =>
+                      suites.find((suite) => suite.id === value)?.name ?? "Pick a suite"
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {suites.map((suite) => (
@@ -194,6 +221,59 @@ export function BenchmarkCreate({
                 0 is greedy decoding, so re-running the same suite against the same model
                 reproduces the same answers — the right default for comparing models. Raise it
                 only to measure how much a model&apos;s accuracy moves with sampling.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="run-sweep">Temperature sweep</Label>
+              <Input
+                id="run-sweep"
+                className="w-56"
+                value={sweep}
+                onChange={(e) => setSweep(e.target.value)}
+                placeholder="e.g. 0, 0.4, 0.8"
+                disabled={starting}
+              />
+              <p className="text-muted-foreground text-xs">
+                {sweepSteps.length > 1
+                  ? `Each model runs ${sweepSteps.length} times — once per step — and appears on the leaderboard as its own variant${
+                      models.length > 0
+                        ? `, ${models.length * sweepSteps.length} in total`
+                        : ""
+                    }. This overrides the single temperature above.`
+                  : "Two or more values run each model once per temperature and compare the variants side by side — how much sampling actually costs this model on this suite. Leave empty to use the single temperature above."}
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={probeConcurrency}
+                onClick={() => setProbeConcurrency((on) => !on)}
+                disabled={starting}
+                className={cn(
+                  "flex items-start gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors",
+                  probeConcurrency
+                    ? "border-neon-cyan/50 bg-neon-cyan/5"
+                    : "border-border text-muted-foreground hover:bg-muted/50",
+                )}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "mt-1 inline-block size-2.5 shrink-0 rounded-sm border",
+                    probeConcurrency
+                      ? "border-neon-cyan bg-neon-cyan"
+                      : "border-muted-foreground/50",
+                  )}
+                />
+                <span className="text-sm">Probe parallel load</span>
+              </button>
+              <p className="text-muted-foreground text-xs">
+                After the tasks finish, sends 1, then 2, then 4 identical requests at once and
+                records how aggregate throughput holds up — the question a strictly serial run
+                can never answer. Adds about seven extra requests per model.
               </p>
             </div>
 

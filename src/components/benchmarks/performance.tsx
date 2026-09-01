@@ -36,6 +36,8 @@ import {
   PHASE_HINTS,
   PHASE_KEYS,
   PHASE_LABELS,
+  type ConcurrencyPoint,
+  type ConcurrencyReport,
   type ModelSummary,
   type RunSummaryView,
   type TaskCellView,
@@ -175,13 +177,104 @@ const ms = (value: number | null): string =>
 const tps = (value: number | null): string =>
   value === null ? "—" : formatValue(value, "tok/s");
 
+/**
+ * One model's parallel-load curve. The number that matters is not the latency
+ * (which always worsens) but whether aggregate throughput grows at all: a local
+ * server pinned to one model usually queues, so 4 in flight finish four times
+ * slower and the total tokens/sec barely moves.
+ */
+function LoadCard({
+  label,
+  color,
+  points,
+}: {
+  label: string;
+  color: string;
+  points: ConcurrencyPoint[];
+}) {
+  const base = points.find((p) => p.level === 1);
+  const peak = points.reduce<ConcurrencyPoint | null>(
+    (best, p) =>
+      p.tokensPerSecond !== null && (best === null || p.tokensPerSecond > (best.tokensPerSecond ?? 0))
+        ? p
+        : best,
+    null,
+  );
+  const scaling =
+    base?.tokensPerSecond && peak?.tokensPerSecond
+      ? peak.tokensPerSecond / base.tokensPerSecond
+      : null;
+  const maxTps = Math.max(...points.map((p) => p.tokensPerSecond ?? 0), 1);
+
+  return (
+    <div className="bg-card/80 min-w-0 rounded-lg border p-4">
+      <div className="mb-3 flex flex-wrap items-baseline gap-2">
+        <span aria-hidden="true" className="size-2 rounded-sm" style={{ background: color }} />
+        <h3 className="font-mono text-sm font-medium">{label}</h3>
+        {scaling !== null ? (
+          <span className="text-muted-foreground text-xs">
+            {peak?.level} in flight reaches {scaling.toFixed(2)}× the throughput of one
+          </span>
+        ) : null}
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-muted-foreground text-left">
+            <th className="pb-1 font-medium">In flight</th>
+            <th className="pb-1 font-medium">Aggregate throughput</th>
+            <th className="pb-1 text-right font-medium">Mean response</th>
+          </tr>
+        </thead>
+        <tbody>
+          {points.map((point) => (
+            <tr key={point.level}>
+              <td className="py-1 pr-3" style={{ fontVariantNumeric: "tabular-nums" }}>
+                {point.level}
+                {point.errors > 0 ? (
+                  <span className="text-neon-yellow ml-1.5" title={`${point.errors} failed`}>
+                    ({point.errors} failed)
+                  </span>
+                ) : null}
+              </td>
+              <td className="py-1 pr-3">
+                <span className="flex items-center gap-2">
+                  <span className="bg-muted h-1.5 w-24 overflow-hidden rounded-full">
+                    <span
+                      className="block h-full rounded-full"
+                      style={{
+                        width: `${((point.tokensPerSecond ?? 0) / maxTps) * 100}%`,
+                        background: color,
+                      }}
+                    />
+                  </span>
+                  <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                    {point.tokensPerSecond !== null
+                      ? `${formatValue(point.tokensPerSecond)} tok/s`
+                      : "—"}
+                  </span>
+                </span>
+              </td>
+              <td className="py-1 text-right" style={{ fontVariantNumeric: "tabular-nums" }}>
+                {formatValue(point.latencyMs)} ms
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function PerformancePanel({
   summary,
   colors,
+  concurrency,
 }: {
   summary: RunSummaryView;
   /** Model identity colors, aligned with `summary.models`. */
   colors: string[];
+  /** Optional parallel-load probe, measured after the serial task loop. */
+  concurrency: ConcurrencyReport;
 }) {
   const [heatMetric, setHeatMetric] = useState(HEAT_METRICS[0].key);
 
@@ -276,6 +369,20 @@ export function PerformancePanel({
     m.latency !== null ? `±${Math.round(m.latency.cv * 100)}%` : null,
   );
 
+  // The probe is keyed by model, so a swept run shows one curve per model, not
+  // one per variant — sampling temperature does not change how a server queues.
+  const loadModels = Object.entries(concurrency.models)
+    .filter(([, points]) => points.length > 0)
+    .map(([model, points]) => {
+      const owner = models.find((m) => m.model === model || m.model.startsWith(`${model}@t=`));
+      return {
+        model,
+        label: owner?.label.split(" @ ")[0] ?? model,
+        color: owner ? colorOf(owner) : colors[0],
+        points,
+      };
+    });
+
   const hasPhases = phaseRows.length > 0;
   const hasProfile = profile.length >= 3 && models.length > 1;
 
@@ -302,6 +409,7 @@ export function PerformancePanel({
           <TabsTab value="profile">Profile</TabsTab>
           <TabsTab value="matrix">Per task</TabsTab>
           <TabsTab value="table">All metrics</TabsTab>
+          {loadModels.length > 0 ? <TabsTab value="load">Under load</TabsTab> : null}
         </TabsList>
 
         <TabsPanel value="latency" className="space-y-3 pt-2">
@@ -500,6 +608,28 @@ export function PerformancePanel({
             />
           </Card>
         </TabsPanel>
+
+        {loadModels.length > 0 ? (
+          <TabsPanel value="load" className="space-y-3 pt-2">
+            <p className="text-muted-foreground text-xs leading-relaxed">
+              Measured after the task loop, on its own fixed prompt, so the contended
+              requests never landed inside a timed task. Aggregate throughput is the
+              batch&apos;s output tokens over the batch&apos;s wall clock — if it stays flat
+              as requests are
+              added, the server is queueing rather than serving them in parallel.
+            </p>
+            <div className={cn("grid gap-3", loadModels.length > 1 && "xl:grid-cols-2")}>
+              {loadModels.map((entry) => (
+                <LoadCard
+                  key={entry.model}
+                  label={entry.label}
+                  color={entry.color}
+                  points={entry.points}
+                />
+              ))}
+            </div>
+          </TabsPanel>
+        ) : null}
 
         <TabsPanel value="table" className="pt-2">
           <MetricsTable summary={summary} colors={colors} />

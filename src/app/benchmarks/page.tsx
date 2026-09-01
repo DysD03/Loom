@@ -2,13 +2,17 @@ import { BenchmarkCreate } from "@/components/benchmarks/benchmark-create";
 import { RunList } from "@/components/benchmarks/run-list";
 import { RunView, type RunCostInfo } from "@/components/benchmarks/run-view";
 import {
+  baselineDeltas,
   ensureBuiltinSuites,
+  getBaselineRun,
   getRun,
   historyView,
   listResults,
   listRuns,
   listSuites,
+  loadConcurrency,
   loadTasks,
+  loadTemperatures,
   summarizeRun,
 } from "@/lib/benchmarks";
 import { getSettings } from "@/lib/settings";
@@ -38,13 +42,16 @@ export default async function BenchmarksPage({
     }
   }
 
+  const summary = active ? summarizeRun(active, listResults(active.id)) : null;
+  const baselineRunId = getBaselineRun()?.id ?? null;
+
   return (
     <div className="flex h-full">
       <RunList
         runs={runs.map((run) => ({ id: run.id, title: run.title, status: run.status }))}
         activeId={active?.id}
       />
-      {active ? (
+      {active && summary ? (
         <RunView
           key={`${active.id}:${active.status}`}
           run={{
@@ -56,10 +63,14 @@ export default async function BenchmarksPage({
             startedAt: active.startedAt,
             finishedAt: active.finishedAt,
             temperature: active.temperature,
+            temperatures: loadTemperatures(active),
+            isBaseline: baselineRunId === active.id,
           }}
-          summary={summarizeRun(active, listResults(active.id))}
+          summary={summary}
           cost={cost}
           pricing={parseTokenPricing(getSettings().tokenPricing)}
+          baseline={baselineDeltas(active, summary)}
+          concurrency={loadConcurrency(active)}
         />
       ) : (
         <BenchmarkCreate

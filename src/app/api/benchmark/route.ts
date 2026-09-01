@@ -1,6 +1,7 @@
 import {
   clampRepeats,
   clampTemperature,
+  clampTemperatures,
   createRun,
   executeRun,
   getSuite,
@@ -13,6 +14,10 @@ interface StartBody {
   title?: string;
   temperature?: number;
   repeats?: number;
+  /** Two or more values sweep the model against itself at each temperature. */
+  temperatures?: number[];
+  /** Measure parallel-load throughput after the (serial) task loop. */
+  probeConcurrency?: boolean;
 }
 
 /**
@@ -51,6 +56,8 @@ export async function POST(request: Request) {
     title: body.title,
     temperature: clampTemperature(body.temperature),
     repeats: clampRepeats(body.repeats),
+    temperatures: clampTemperatures(body.temperatures),
+    probeConcurrency: Boolean(body.probeConcurrency),
   });
 
   // Fire and forget — the executor owns run status from here.

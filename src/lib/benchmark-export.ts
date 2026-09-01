@@ -22,6 +22,8 @@ export function parseFormat(value: string | null | undefined): ExportFormat {
 /** One executed sample, joined to the task it answered. */
 export interface ExportRow {
   model: string;
+  /** Sampling temperature of this sample — constant unless the run swept. */
+  temperature: number;
   taskIndex: number;
   repeatIndex: number;
   output: string;
@@ -50,6 +52,8 @@ export interface ExportRun {
   suiteName: string;
   status: string;
   temperature: number;
+  /** Sweep steps, when the run compared a model against itself at several. */
+  temperatures: number[];
   repeats: number;
   models: string[];
   startedAt: string | null;
@@ -72,6 +76,7 @@ interface FlatRow {
   temperature: number;
   repeats: number;
   model: string;
+  temperature_sample: number;
   task_index: number;
   task_name: string;
   category: string;
@@ -106,6 +111,7 @@ const COLUMNS: (keyof FlatRow)[] = [
   "temperature",
   "repeats",
   "model",
+  "temperature_sample",
   "task_index",
   "task_name",
   "category",
@@ -139,6 +145,7 @@ export function flatten(input: ExportInput): FlatRow[] {
   const ordered = [...rows].sort(
     (a, b) =>
       run.models.indexOf(a.model) - run.models.indexOf(b.model) ||
+      a.temperature - b.temperature ||
       a.taskIndex - b.taskIndex ||
       a.repeatIndex - b.repeatIndex,
   );
@@ -151,6 +158,7 @@ export function flatten(input: ExportInput): FlatRow[] {
       temperature: run.temperature,
       repeats: run.repeats,
       model: row.model,
+      temperature_sample: row.temperature,
       task_index: row.taskIndex,
       task_name: task?.name ?? "",
       category: task?.category ?? "",

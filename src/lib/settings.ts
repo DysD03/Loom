@@ -40,6 +40,19 @@ export function getSettings(): AppSettings {
   return db.insert(appSettings).values({ id: SETTINGS_ID }).returning().get();
 }
 
+/**
+ * Pins (or with "" clears) the benchmark run used as the comparison baseline.
+ * Deliberately outside `SettingsInput`: it is set from the benchmarks page, so
+ * a save of the settings form must never clear it as a side effect.
+ */
+export function setBaselineRun(runId: string): void {
+  getSettings();
+  db.update(appSettings)
+    .set({ baselineRunId: runId, updatedAt: new Date().toISOString() })
+    .where(eq(appSettings.id, SETTINGS_ID))
+    .run();
+}
+
 export function saveSettings(input: SettingsInput): AppSettings {
   getSettings();
   return db
