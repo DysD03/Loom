@@ -15,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { BarChart, ChartLegend, seriesColor } from "@/components/dashboards/charts";
+import { AnalysisPanel } from "./analysis";
 import { CostPanel } from "./cost";
 import type { TokenPrice } from "@/lib/benchmark-cost";
 import { PerformancePanel } from "./performance";
@@ -406,6 +407,8 @@ export function RunView({
               ) : null}
 
               <PerformancePanel summary={summary} colors={modelColors} />
+
+              <AnalysisPanel runId={run.id} summary={summary} colors={modelColors} />
 
               <section className="space-y-2">
                 <h2 className="text-muted-foreground text-xs font-medium tracking-widest uppercase">

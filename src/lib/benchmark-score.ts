@@ -240,6 +240,8 @@ export interface TaskCellView {
   /** How many samples of this cell ran, and how many of them passed. */
   samples: number;
   passCount: number;
+  /** One entry per failed sample, saying how it failed. */
+  failures: FailureKind[];
   latencyMs: number;
   ttftMs: number | null;
   tokensPerSecond: number | null;
@@ -603,6 +605,274 @@ export function scoreDeterministic(task: BenchTask, output: string): TaskScore {
       // Nothing to check — the run only records latency and throughput.
       return { score: 1, passed: true };
   }
+}
+
+// --- failure taxonomy ---
+
+/**
+ * Why a sample failed. "12/30 passed" hides the difference between a model that
+ * is wrong and one that is right but answered in a shape the scorer would not
+ * take — the second is a prompt or scorer problem, and it is the cheaper fix.
+ */
+export const FAILURE_KINDS = [
+  "wrong",
+  "format",
+  "refusal",
+  "truncated",
+  "empty",
+  "timeout",
+  "error",
+] as const;
+
+export type FailureKind = (typeof FAILURE_KINDS)[number];
+
+export const FAILURE_LABELS: Record<FailureKind, string> = {
+  wrong: "Wrong answer",
+  format: "Format miss",
+  refusal: "Refused",
+  truncated: "Cut off",
+  empty: "Empty reply",
+  timeout: "Timed out",
+  error: "Request failed",
+};
+
+export const FAILURE_HINTS: Record<FailureKind, string> = {
+  wrong: "Answered, and the answer is not the expected one.",
+  format:
+    "The expected answer is in the reply but not in a shape the scorer accepts \u2014 usually a prompt fix, not a model one.",
+  refusal: "Declined the task instead of attempting it.",
+  truncated: "Ran into the output ceiling and stopped mid-answer.",
+  empty: "Returned nothing to score.",
+  timeout: "Did not finish inside the per-task time limit.",
+  error: "The request itself failed \u2014 connection, unloaded model, or server error.",
+};
+
+const REFUSAL_PATTERNS = [
+  /\bi (?:cannot|can'?t|will not|won'?t|am unable to)\b/i,
+  /\bi'?m (?:sorry|afraid|not able)\b/i,
+  /\bas an ai\b/i,
+  /\bi (?:do not|don'?t) (?:have|feel comfortable)\b/i,
+];
+
+/**
+ * Whether the output ceiling almost certainly clipped the reply. The token
+ * count is the reliable signal; the length test only catches servers that do
+ * not report usage, and is deliberately strict so a terse answer never counts.
+ */
+function looksTruncated(
+  output: string,
+  outputTokens: number | null,
+  cap: number | null,
+): boolean {
+  if (cap !== null && outputTokens !== null && outputTokens >= cap - 8) return true;
+  const text = output.trimEnd();
+  return text.length > 600 && /[A-Za-z0-9,;:-]$/.test(text);
+}
+
+/**
+ * The expected answer is present but the scorer could not take it. Only claimed
+ * where the evidence is unambiguous \u2014 a false "format" reading would excuse a
+ * model that is simply wrong.
+ */
+function looksMisformatted(
+  task: { scoring: ScoringKind; expected?: string },
+  output: string,
+): boolean {
+  const expected = task.expected?.trim() ?? "";
+  if (expected === "") return false;
+
+  switch (task.scoring) {
+    case "numeric": {
+      const target = Number(expected.replace(/[$,%]/g, ""));
+      if (!Number.isFinite(target)) return false;
+      const tolerance = Math.max(1e-6, Math.abs(target) * 1e-4);
+      const tokens = output.match(/-?\$?[\d,]+(?:\.\d+)?%?/g) ?? [];
+      // The number is somewhere in the reply, just not where the scorer looks.
+      return tokens.some((token) => {
+        const value = Number(token.replace(/[$,%]/g, ""));
+        return Number.isFinite(value) && Math.abs(value - target) <= tolerance;
+      });
+    }
+    case "mcq": {
+      const want = expected.toUpperCase();
+      return new RegExp(`\\b${want}\\b`).test(output) && extractLetter(output) !== want;
+    }
+    case "exact":
+      return looseNormalize(output).includes(looseNormalize(expected));
+    case "regex": {
+      // Only anchored patterns can tell format from content: if dropping the
+      // anchors makes it match, the answer is there and only the wrapping is
+      // wrong. An unanchored pattern that failed simply did not match.
+      const anchored = expected.startsWith("^") && expected.endsWith("$");
+      if (!anchored) return false;
+      try {
+        return new RegExp(expected.slice(1, -1), "i").test(output);
+      } catch {
+        return false;
+      }
+    }
+    case "json": {
+      // A reply that never parses as JSON but does carry the expected keys is a
+      // formatting failure, not a knowledge one.
+      if (extractJsonBlock(output) !== undefined) return false;
+      let want: unknown;
+      try {
+        want = JSON.parse(expected);
+      } catch {
+        return false;
+      }
+      if (!want || typeof want !== "object" || Array.isArray(want)) return false;
+      const keys = Object.keys(want as Record<string, unknown>);
+      return keys.length > 0 && keys.every((key) => output.includes(key));
+    }
+    default:
+      return false;
+  }
+}
+
+/** One executed sample, as much of it as the taxonomy needs. */
+export interface FailureSample {
+  passed: boolean;
+  output: string;
+  error: string | null;
+  outputTokens: number | null;
+}
+
+/**
+ * Buckets one failed sample; null for a sample that passed. `outputCap` is the
+ * run's max output tokens, which is what makes "cut off" detectable at all.
+ */
+export function classifyFailure(
+  task: { scoring: ScoringKind; expected?: string },
+  sample: FailureSample,
+  outputCap: number | null = null,
+): FailureKind | null {
+  if (sample.passed) return null;
+  if (sample.error) {
+    return /timed out|timeout|abort/i.test(sample.error) ? "timeout" : "error";
+  }
+  if (sample.output.trim() === "") return "empty";
+  if (REFUSAL_PATTERNS.some((pattern) => pattern.test(sample.output))) return "refusal";
+  if (looksTruncated(sample.output, sample.outputTokens, outputCap)) return "truncated";
+  if (looksMisformatted(task, sample.output)) return "format";
+  return "wrong";
+}
+
+/** The kind that accounts for most of a cell's failures; null when none failed. */
+export function dominantFailure(kinds: FailureKind[]): FailureKind | null {
+  if (kinds.length === 0) return null;
+  const tally = new Map<FailureKind, number>();
+  for (const kind of kinds) tally.set(kind, (tally.get(kind) ?? 0) + 1);
+  return [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
+}
+
+/** How one model's failed samples break down, plus how unstable it was. */
+export interface FailureProfile {
+  model: string;
+  label: string;
+  counts: Record<FailureKind, number>;
+  /** Failed samples (the counts sum to this). */
+  failed: number;
+  /** Scored samples this model completed. */
+  samples: number;
+  /** Tasks it neither always passed nor always failed \u2014 only meaningful with repeats. */
+  flaky: number;
+}
+
+export function failureProfiles(summary: RunSummaryView): FailureProfile[] {
+  return summary.models.map((model, mi) => {
+    const counts = Object.fromEntries(FAILURE_KINDS.map((k) => [k, 0])) as Record<
+      FailureKind,
+      number
+    >;
+    let failed = 0;
+    let samples = 0;
+    let flaky = 0;
+    for (const row of summary.tasks) {
+      if (isTimingOnly(row.scoring)) continue;
+      const cell = row.cells[mi];
+      if (!cell) continue;
+      samples += cell.samples;
+      failed += cell.samples - cell.passCount;
+      if (cell.passCount > 0 && cell.passCount < cell.samples) flaky += 1;
+      for (const kind of cell.failures) counts[kind] += 1;
+    }
+    return { model: model.model, label: model.label, counts, failed, samples, flaky };
+  });
+}
+
+// --- head-to-head ---
+
+/** One task as the two compared models each answered it. */
+export interface HeadToHeadSide {
+  passCount: number;
+  samples: number;
+  /** Dominant failure kind; null when the side passed every sample. */
+  failure: FailureKind | null;
+  output: string;
+}
+
+export interface HeadToHeadTask {
+  index: number;
+  name: string;
+  category: string;
+  a: HeadToHeadSide;
+  b: HeadToHeadSide;
+}
+
+export interface HeadToHead {
+  /** Tasks the first model passed and the second did not. */
+  onlyA: HeadToHeadTask[];
+  /** And the other direction \u2014 the half a single leaderboard number hides. */
+  onlyB: HeadToHeadTask[];
+  bothFailed: HeadToHeadTask[];
+  bothPassed: number;
+  /** Scored tasks where both models produced a result. */
+  compared: number;
+}
+
+const side = (cell: TaskCellView): HeadToHeadSide => ({
+  passCount: cell.passCount,
+  samples: cell.samples,
+  failure: dominantFailure(cell.failures),
+  output: cell.output,
+});
+
+/**
+ * Splits two models' scored tasks four ways. Two models on 70% can disagree on
+ * every task they get wrong, and that disagreement is the actionable part \u2014 it
+ * says which one to keep for which work.
+ */
+export function headToHead(summary: RunSummaryView, ai: number, bi: number): HeadToHead {
+  const onlyA: HeadToHeadTask[] = [];
+  const onlyB: HeadToHeadTask[] = [];
+  const bothFailed: HeadToHeadTask[] = [];
+  let bothPassed = 0;
+  let compared = 0;
+
+  for (const row of summary.tasks) {
+    if (isTimingOnly(row.scoring)) continue;
+    const ca = row.cells[ai];
+    const cb = row.cells[bi];
+    if (!ca || !cb) continue;
+    compared += 1;
+    if (ca.passed && cb.passed) {
+      bothPassed += 1;
+      continue;
+    }
+    const entry: HeadToHeadTask = {
+      index: row.index,
+      name: row.name,
+      category: row.category,
+      a: side(ca),
+      b: side(cb),
+    };
+    if (ca.passed) onlyA.push(entry);
+    else if (cb.passed) onlyB.push(entry);
+    else bothFailed.push(entry);
+  }
+
+  return { onlyA, onlyB, bothFailed, bothPassed, compared };
 }
 
 /**

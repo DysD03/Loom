@@ -18,6 +18,7 @@ import { parseModel } from "./models";
 import { getSettings } from "./settings";
 import { costOfMs } from "./benchmark-cost";
 import {
+  classifyFailure,
   describe,
   isTimingOnly,
   modelLabels,
@@ -26,6 +27,7 @@ import {
   wilson,
   type BenchTask,
   type CategorySummary,
+  type FailureKind,
   type HistoryEntry,
   type LatencyPhases,
   type ModelSummary,
@@ -55,6 +57,9 @@ export function clampTemperature(value: number | undefined): number {
  * measured rather than cut off. A timeout is recorded as a failed cell, so an
  * over-tight limit would silently score "too slow" as "wrong".
  */
+/** Output ceiling per task. Exported so "cut off" is detectable after the fact. */
+export const MAX_OUTPUT_TOKENS = 4_096;
+
 const TASK_TIMEOUT_MS = 180_000;
 const JUDGE_TIMEOUT_MS = 60_000;
 const OUTPUT_STORE_MAX = 6_000;
@@ -450,7 +455,7 @@ async function streamTask(
       // Headroom for reasoning models: the built-in suites are hard enough that
       // a chain of thought is expected, and a truncated one loses the trailing
       // "Answer:" line and scores zero — measuring the cap, not the model.
-      maxOutputTokens: 4_096,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
       abortSignal: AbortSignal.timeout(TASK_TIMEOUT_MS),
       onError: () => {}, // surfaced as an error part in the loop below
     });
@@ -765,7 +770,7 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
     if (bucket) bucket.push(r);
     else byKey.set(key, [r]);
   }
-  const cell = (model: string, taskIndex: number): TaskCellView | null => {
+  const cell = (task: BenchTask, model: string, taskIndex: number): TaskCellView | null => {
     const rows = byKey.get(`${model} ${taskIndex}`);
     if (!rows || rows.length === 0) return null;
     const sorted = [...rows].sort((a, b) => a.repeatIndex - b.repeatIndex);
@@ -783,6 +788,9 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
       passed: passCount * 2 > sorted.length,
       samples: sorted.length,
       passCount,
+      failures: sorted
+        .map((x) => classifyFailure(task, x, MAX_OUTPUT_TOKENS))
+        .filter((kind): kind is FailureKind => kind !== null),
       latencyMs: avg((x) => x.latencyMs) ?? r.latencyMs,
       ttftMs: avg((x) => x.ttftMs),
       tokensPerSecond: avg((x) => x.tokensPerSecond),
@@ -803,7 +811,7 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
     scoring: task.scoring,
     expected: task.expected,
     prompt: task.prompt,
-    cells: models.map((m) => cell(m, index)),
+    cells: models.map((m) => cell(task, m, index)),
   }));
 
   const modelSummaries: ModelSummary[] = models.map((model, mi) => {
