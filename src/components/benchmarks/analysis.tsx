@@ -222,6 +222,7 @@ export function AnalysisPanel({
     [canDuel, summary, aIndex, bIndex],
   );
 
+  const repeats = models[aIndex]?.repeats ?? 1;
   const aColor = colors[aIndex] ?? "var(--neon-cyan)";
   const bColor = colors[bIndex] ?? "var(--neon-pink)";
   const aLabel = models[aIndex]?.label ?? "A";
@@ -302,28 +303,30 @@ export function AnalysisPanel({
                 <>
                   <Card
                     title={`${aLabel} vs ${bLabel}`}
-                    hint={`Across ${duel.compared} scored tasks. Two models on the same score can disagree on every task they get wrong — the split below is what a single percentage hides.`}
+                    hint={`Across ${duel.compared} scored tasks, compared on how often each one passed${
+                      repeats > 1 ? ` over ${repeats} samples` : ""
+                    }. Two models on the same score can disagree on every task they get wrong — the split below is what a single percentage hides.`}
                   >
                     <BucketBar
                       buckets={[
                         {
-                          label: `Only ${aLabel}`,
-                          count: duel.onlyA.length,
+                          label: `${aLabel} ahead`,
+                          count: duel.aAhead.length,
                           color: aColor,
                         },
                         {
-                          label: `Only ${bLabel}`,
-                          count: duel.onlyB.length,
+                          label: `${bLabel} ahead`,
+                          count: duel.bAhead.length,
                           color: bColor,
                         },
                         {
-                          label: "Both passed",
-                          count: duel.bothPassed,
+                          label: "Both clean",
+                          count: duel.bothClean,
                           color: "var(--neon-green)",
                         },
                         {
-                          label: "Both failed",
-                          count: duel.bothFailed.length,
+                          label: "Level, neither clean",
+                          count: duel.bothStruggled.length,
                           color: "var(--muted-foreground)",
                         },
                       ]}
@@ -332,34 +335,34 @@ export function AnalysisPanel({
 
                   <div className="grid gap-3 lg:grid-cols-2">
                     <Card
-                      title={`${aLabel} won these ${duel.onlyA.length}`}
-                      hint={`Passed by ${aLabel}, failed by ${bLabel} — the reply below is ${bLabel}'s.`}
+                      title={`${aLabel} ahead on ${duel.aAhead.length}`}
+                      hint={`Where ${aLabel} passed more often — the reply below is ${bLabel}'s.`}
                     >
                       <DiffList
-                        tasks={duel.onlyA}
+                        tasks={duel.aAhead}
                         sides={(t) => [{ side: t.b, color: bColor }]}
-                        empty={`${bLabel} passed everything ${aLabel} did.`}
+                        empty={`${bLabel} matched ${aLabel} on every task.`}
                       />
                     </Card>
                     <Card
-                      title={`${bLabel} won these ${duel.onlyB.length}`}
-                      hint={`Passed by ${bLabel}, failed by ${aLabel} — the reply below is ${aLabel}'s.`}
+                      title={`${bLabel} ahead on ${duel.bAhead.length}`}
+                      hint={`Where ${bLabel} passed more often — the reply below is ${aLabel}'s.`}
                     >
                       <DiffList
-                        tasks={duel.onlyB}
+                        tasks={duel.bAhead}
                         sides={(t) => [{ side: t.a, color: aColor }]}
-                        empty={`${aLabel} passed everything ${bLabel} did.`}
+                        empty={`${aLabel} matched ${bLabel} on every task.`}
                       />
                     </Card>
                   </div>
 
-                  {duel.bothFailed.length > 0 ? (
+                  {duel.bothStruggled.length > 0 ? (
                     <Card
-                      title={`Neither passed these ${duel.bothFailed.length}`}
+                      title={`Level on ${duel.bothStruggled.length}, and neither clean`}
                       hint="Where the suite is hard for both — worth checking whether the task is fair before reading it as a model limit."
                     >
                       <DiffList
-                        tasks={duel.bothFailed}
+                        tasks={duel.bothStruggled}
                         sides={(t) => [
                           { side: t.a, color: aColor, name: aLabel },
                           { side: t.b, color: bColor, name: bLabel },

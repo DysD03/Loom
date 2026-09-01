@@ -1057,6 +1057,9 @@ export function summarizeRun(run: BenchmarkRun, results: BenchmarkResult[]): Run
       failures: sorted
         .map((x) => classifyFailure(task, x, MAX_OUTPUT_TOKENS))
         .filter((kind): kind is FailureKind => kind !== null),
+      failedOutput:
+        sorted.find((x) => classifyFailure(task, x, MAX_OUTPUT_TOKENS) !== null)?.output ??
+        null,
       latencyMs: avg((x) => x.latencyMs) ?? r.latencyMs,
       ttftMs: avg((x) => x.ttftMs),
       tokensPerSecond: avg((x) => x.tokensPerSecond),

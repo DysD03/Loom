@@ -248,6 +248,12 @@ export interface TaskCellView {
   passCount: number;
   /** One entry per failed sample, saying how it failed. */
   failures: FailureKind[];
+  /**
+   * A failing sample's reply, when one exists. With repeats, `output` is the
+   * first sample's — which may well have passed — so showing that beside a
+   * failure badge would contradict itself.
+   */
+  failedOutput: string | null;
   latencyMs: number;
   ttftMs: number | null;
   tokensPerSecond: number | null;
@@ -689,12 +695,12 @@ export const FAILURE_LABELS: Record<FailureKind, string> = {
 export const FAILURE_HINTS: Record<FailureKind, string> = {
   wrong: "Answered, and the answer is not the expected one.",
   format:
-    "The expected answer is in the reply but not in a shape the scorer accepts \u2014 usually a prompt fix, not a model one.",
+    "The expected answer is in the reply but not in a shape the scorer accepts — usually a prompt fix, not a model one.",
   refusal: "Declined the task instead of attempting it.",
   truncated: "Ran into the output ceiling and stopped mid-answer.",
   empty: "Returned nothing to score.",
   timeout: "Did not finish inside the per-task time limit.",
-  error: "The request itself failed \u2014 connection, unloaded model, or server error.",
+  error: "The request itself failed — connection, unloaded model, or server error.",
 };
 
 const REFUSAL_PATTERNS = [
@@ -721,7 +727,7 @@ function looksTruncated(
 
 /**
  * The expected answer is present but the scorer could not take it. Only claimed
- * where the evidence is unambiguous \u2014 a false "format" reading would excuse a
+ * where the evidence is unambiguous — a false "format" reading would excuse a
  * model that is simply wrong.
  */
 function looksMisformatted(
@@ -825,7 +831,7 @@ export interface FailureProfile {
   failed: number;
   /** Scored samples this model completed. */
   samples: number;
-  /** Tasks it neither always passed nor always failed \u2014 only meaningful with repeats. */
+  /** Tasks it neither always passed nor always failed — only meaningful with repeats. */
   flaky: number;
 }
 
@@ -871,12 +877,14 @@ export interface HeadToHeadTask {
 }
 
 export interface HeadToHead {
-  /** Tasks the first model passed and the second did not. */
-  onlyA: HeadToHeadTask[];
-  /** And the other direction \u2014 the half a single leaderboard number hides. */
-  onlyB: HeadToHeadTask[];
-  bothFailed: HeadToHeadTask[];
-  bothPassed: number;
+  /** Tasks the first model scored better on. */
+  aAhead: HeadToHeadTask[];
+  /** And the other direction — the half a single leaderboard number hides. */
+  bAhead: HeadToHeadTask[];
+  /** Both passed every sample. */
+  bothClean: number;
+  /** Level, and neither of them clean — where the suite is hard for both. */
+  bothStruggled: HeadToHeadTask[];
   /** Scored tasks where both models produced a result. */
   compared: number;
 }
@@ -885,19 +893,27 @@ const side = (cell: TaskCellView): HeadToHeadSide => ({
   passCount: cell.passCount,
   samples: cell.samples,
   failure: dominantFailure(cell.failures),
-  output: cell.output,
+  // Show what went wrong, not whatever the first sample happened to say.
+  output: cell.failedOutput ?? cell.output,
 });
+
+const passRate = (cell: TaskCellView) =>
+  cell.samples > 0 ? cell.passCount / cell.samples : 0;
 
 /**
  * Splits two models' scored tasks four ways. Two models on 70% can disagree on
- * every task they get wrong, and that disagreement is the actionable part \u2014 it
+ * every task they get wrong, and that disagreement is the actionable part — it
  * says which one to keep for which work.
+ *
+ * Compared on pass *rate*, not on the majority verdict: with repeats, 5/5
+ * against 3/5 is a real difference that reading both as "passed" would erase.
+ * With a single sample the rates are 0 or 1, so this is exactly pass-vs-fail.
  */
 export function headToHead(summary: RunSummaryView, ai: number, bi: number): HeadToHead {
-  const onlyA: HeadToHeadTask[] = [];
-  const onlyB: HeadToHeadTask[] = [];
-  const bothFailed: HeadToHeadTask[] = [];
-  let bothPassed = 0;
+  const aAhead: HeadToHeadTask[] = [];
+  const bAhead: HeadToHeadTask[] = [];
+  const bothStruggled: HeadToHeadTask[] = [];
+  let bothClean = 0;
   let compared = 0;
 
   for (const row of summary.tasks) {
@@ -906,8 +922,10 @@ export function headToHead(summary: RunSummaryView, ai: number, bi: number): Hea
     const cb = row.cells[bi];
     if (!ca || !cb) continue;
     compared += 1;
-    if (ca.passed && cb.passed) {
-      bothPassed += 1;
+    const rateA = passRate(ca);
+    const rateB = passRate(cb);
+    if (rateA === 1 && rateB === 1) {
+      bothClean += 1;
       continue;
     }
     const entry: HeadToHeadTask = {
@@ -917,12 +935,12 @@ export function headToHead(summary: RunSummaryView, ai: number, bi: number): Hea
       a: side(ca),
       b: side(cb),
     };
-    if (ca.passed) onlyA.push(entry);
-    else if (cb.passed) onlyB.push(entry);
-    else bothFailed.push(entry);
+    if (rateA > rateB) aAhead.push(entry);
+    else if (rateB > rateA) bAhead.push(entry);
+    else bothStruggled.push(entry);
   }
 
-  return { onlyA, onlyB, bothFailed, bothPassed, compared };
+  return { aAhead, bAhead, bothClean, bothStruggled, compared };
 }
 
 /**
