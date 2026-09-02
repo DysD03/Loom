@@ -86,6 +86,12 @@ function localProvider(
     baseURL: endpoint.baseUrl,
     apiKey: endpoint.apiKey,
     fetch: options?.fetch,
+    // Sends `stream_options: { include_usage: true }`. Without it an
+    // OpenAI-compatible server streams no usage object at all, and every
+    // token-derived number — decode and prefill tokens/sec, time per output
+    // token, the token counts behind the cost estimate — comes out null while
+    // the timing charts still look fine.
+    includeUsage: true,
   });
 }
 

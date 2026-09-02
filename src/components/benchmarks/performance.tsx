@@ -383,6 +383,15 @@ export function PerformancePanel({
       };
     });
 
+  // A server that streams no usage object leaves every token-derived metric
+  // null, which reads as a broken tab rather than a missing server feature.
+  const noTokenCounts = models.every(
+    (m) =>
+      m.avgTokensPerSecond === null &&
+      m.avgPrefillTokensPerSecond === null &&
+      m.avgTpotMs === null,
+  );
+
   const hasPhases = phaseRows.length > 0;
   const hasProfile = profile.length >= 3 && models.length > 1;
 
@@ -472,6 +481,19 @@ export function PerformancePanel({
         </TabsPanel>
 
         <TabsPanel value="throughput" className="space-y-3 pt-2">
+          {noTokenCounts ? (
+            <div className="border-neon-yellow/40 bg-neon-yellow/5 flex items-start gap-2.5 rounded-lg border px-4 py-3">
+              <Gauge className="text-neon-yellow mt-0.5 size-4 shrink-0" />
+              <p className="text-muted-foreground text-xs leading-relaxed">
+                No model in this run reported token counts, so every throughput number
+                here is blank — the timings above are unaffected. Loom asks for them
+                (<code>stream_options.include_usage</code>); a server that answers
+                without a usage object leaves nothing to divide by. Update the server, or
+                re-run once it reports usage.
+              </p>
+            </div>
+          ) : null}
+
           {speedRows.length > 0 ? (
             <Card
               title="Decode speed spread"
