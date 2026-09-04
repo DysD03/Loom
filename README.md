@@ -91,6 +91,11 @@ npm run db:migrate   # create ./data/loom.db from migrations
 npm run dev          # http://localhost:3000
 ```
 
+**Updating an existing install:** `git pull && npm install && npm run dev`. Any
+migrations that arrived with the pull are applied when the app starts, so a new
+column never leaves you staring at a `no such column` error — `npm run
+db:migrate` is still there if you'd rather apply them yourself first.
+
 ## Run with Docker
 
 Loom ships a multi-stage `Dockerfile` and a `docker-compose.yml`. Migrations are
@@ -256,7 +261,7 @@ Notes:
 | `npm run lint` / `npm run typecheck` | ESLint / TypeScript |
 | `npm run format` | Prettier write |
 | `npm run db:generate` | Generate a migration from `src/db/schema.ts` |
-| `npm run db:migrate` | Apply migrations to `./data/loom.db` |
+| `npm run db:migrate` | Apply migrations to `./data/loom.db` (also done on app start) |
 | `npm run db:studio` | Inspect the DB in Drizzle Studio |
 
 ## MCP servers
